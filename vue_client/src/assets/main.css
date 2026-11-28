@@ -23,6 +23,7 @@
      look.color.buffer.* once the settings store loads. */
   --buffer-unread: var(--accent);
   --buffer-highlight: var(--warn);
+  --buffer-header: var(--fg);
   --buffer-name: var(--fg);
   --buffer-muted: var(--fg-muted);
   --buffer-offline: var(--fg-muted);

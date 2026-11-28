@@ -28,6 +28,7 @@ export const COLOR_VARS: Record<string, string> = {
   'look.color.message.self_fg': '--self-fg',
   'look.color.buffer.unread': '--buffer-unread',
   'look.color.buffer.highlight': '--buffer-highlight',
+  'look.color.buffer.header': '--buffer-header',
   'look.color.buffer.name': '--buffer-name',
   'look.color.buffer.muted': '--buffer-muted',
   'look.color.buffer.offline': '--buffer-offline',

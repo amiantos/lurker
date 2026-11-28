@@ -1389,9 +1389,11 @@ onBeforeUnmount(() => {
   }
 }
 
+/* Every header's name: a network's, the Friends and Favorites headings, and
+   LURKER at the top. One themed colour (#1433); a header's state is its dot. */
 .name {
   flex: 1;
-  color: var(--fg);
+  color: var(--buffer-header);
   /* Ellipsize like .label so a long network name clips instead of wrapping the
      row to two lines or running under the revealed + / kebab glyphs. min-width:0
      lets the flex item shrink below its content width so the ellipsis engages. */

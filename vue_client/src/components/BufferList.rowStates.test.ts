@@ -118,6 +118,8 @@ describe('BufferList row states', () => {
     // Nothing after them recolours a DM by its peer: unread shows on a DM as
     // it does on a channel.
     expect(css.slice(order[order.length - 1])).not.toMatch(/peer-(away|offline) \.label/);
+    // Headers (network names, section headings, LURKER) share one colour.
+    expect(css).toMatch(/\.name \{\s*flex: 1;\s*color: var\(--buffer-header\);/);
     // The row itself is no longer faded: that took the tree guides with it.
     expect(css).not.toMatch(/\.channels li\.not-joined \{\s*opacity/);
   });

@@ -728,9 +728,22 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     default: 'var(--warn)',
     description: 'Rows with highlights.',
   },
-  // The resting colours (#1433). An unread or highlighted row takes its own
-  // colour over all three; a row that is both muted and offline is drawn as
-  // offline.
+  // The resting colours (#1433): one for the list's headers, whose state is
+  // their dot's to show, and three for its rows. An unread or highlighted row
+  // takes its own colour over all three; a row that is both muted and offline
+  // is drawn as offline.
+  {
+    key: 'look.color.buffer.header',
+    label: 'Header color',
+    category: 'appearance',
+    group: 'buffer-list',
+    themed: true,
+    type: 'color',
+    default: 'var(--fg)',
+    description:
+      'Network names, the Friends and Favorites headings, and the Lurker header at ' +
+      'the top of the list.',
+  },
   {
     key: 'look.color.buffer.name',
     label: 'Buffer name color',
