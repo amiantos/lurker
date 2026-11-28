@@ -17,6 +17,7 @@
       <template v-for="(item, i) in state.items" :key="i">
         <div v-if="item.divider" class="divider" role="separator"></div>
         <div v-else-if="item.heading" class="heading" role="presentation">{{ item.heading }}</div>
+        <div v-else-if="item.note" class="note" role="note">{{ item.note }}</div>
         <button
           v-else
           type="button"
@@ -224,6 +225,12 @@ onBeforeUnmount(() => {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
+  user-select: none;
+}
+.note {
+  padding: var(--space-2) var(--space-7) var(--space-3);
+  color: var(--fg-muted);
+  font-style: italic;
   user-select: none;
 }
 .divider {

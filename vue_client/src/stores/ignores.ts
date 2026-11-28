@@ -48,6 +48,46 @@ function findMuteRule(
   return g ? { ...g, networkId: null } : null;
 }
 
+// What the notification menus show for a scope, read from EVERY silencing rule
+// there, not only the ones the menus write. A rule counts when it has no mask,
+// pattern or exception, hides nothing, and has not lapsed: those are the rules
+// that silence the whole channel, DM or network.
+//
+// `levels` is all of theirs together. `custom` says the menus must not edit:
+// the rules are not exactly the shapes the menus write (at most one mute rule
+// and one NOHIGHLIGHT rule, neither timed), so a change from the menu would
+// rewrite or strand something the user typed. A combined rule
+// (`NOUNREAD NONOTIFY NOHIGHLIGHT`), a timed mute and a duplicate all land
+// here; the menu shows what is in force and leaves it to the ignore editor.
+export interface ScopeSilencing {
+  levels: string[];
+  custom: boolean;
+}
+const SILENCING_LEVELS = new Set(['NOUNREAD', 'NONOTIFY', 'NOHIGHLIGHT']);
+function silencingAt(
+  netList: IgnoreEntry[],
+  globalList: IgnoreEntry[],
+  scopeMatches: (e: IgnoreEntry) => boolean,
+  now: number = Date.now(),
+): ScopeSilencing {
+  const levels = new Set<string>();
+  let mutes = 0;
+  let suppresses = 0;
+  let custom = false;
+  for (const e of [...netList, ...globalList]) {
+    if (e.mask || e.pattern || e.isExcept || !scopeMatches(e)) continue;
+    if (!e.levels.length || !e.levels.every((l) => SILENCING_LEVELS.has(l))) continue;
+    if (e.expiresAt && Date.parse(e.expiresAt) <= now) continue;
+    for (const l of e.levels) levels.add(l);
+    if (e.expiresAt) custom = true;
+    if (isSuppressOnlyLevels(e.levels)) suppresses += 1;
+    else if (isMuteOnlyLevels(e.levels)) mutes += 1;
+    else custom = true;
+  }
+  if (mutes > 1 || suppresses > 1) custom = true;
+  return { levels: [...levels], custom };
+}
+
 // Ignore rules (issue #301; global-vs-network scoping #350). Server is the
 // source of truth — adds/removes ship over WS and the server fans an
 // `ignore-list-updated` event to every session (cross-device sync). Filtering
@@ -207,6 +247,27 @@ export const useIgnoresStore = defineStore('ignores', {
           isSuppressOnlyLevels,
         );
       },
+
+    // What is in force for a channel or DM, and for a whole network, and
+    // whether the menus may edit it. See silencingAt.
+    bufferSilencing:
+      (state) =>
+      (networkId: number | string, target: string): ScopeSilencing => {
+        const t = target.toLowerCase();
+        return silencingAt(
+          state.byNetwork[Number(networkId)] || EMPTY,
+          state.global,
+          (e) => e.channels?.length === 1 && e.channels[0].toLowerCase() === t,
+        );
+      },
+    networkSilencing:
+      (state) =>
+      (networkId: number | string): ScopeSilencing =>
+        silencingAt(
+          state.byNetwork[Number(networkId)] || EMPTY,
+          state.global,
+          (e) => !e.channels || e.channels.length === 0,
+        ),
 
     isHidden:
       (state) =>
