@@ -387,7 +387,7 @@ import {
   isPeerOffline as derivePeerOffline,
   isPeerAway as derivePeerAway,
 } from '../utils/peerPresence.js';
-import { isChannelTarget } from '../../../shared/channels.js';
+import { dccChatPeer, isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
 import { bufferSortKey } from '../utils/bufferOrder.js';
 import {
   closedNetworkView,
@@ -892,6 +892,7 @@ function rowClasses(buf: Buffer, networkId: number): Record<string, boolean> {
     'not-joined': isUnjoined(buf, networkId),
     'peer-away': isPeerAway(buf),
     'peer-offline': isPeerOffline(buf),
+    'dcc-closed': isDccChatClosed(buf),
   };
 }
 
@@ -938,7 +939,17 @@ function isPeerOffline(buf: Buffer): boolean {
 function isPeerAway(buf: Buffer): boolean {
   return isDmBuffer(buf) && derivePeerAway(peerOf(buf));
 }
+// A `=nick` DCC chat with no live session: a history view, like a parted
+// channel. By the session alone, not the IRC link, which the chat does not
+// need. Only once the snapshot has said which chats are live: an unset list
+// is not an empty one.
+function isDccChatClosed(buf: Buffer): boolean {
+  if (buf.networkId == null || !isDccChatTarget(buf.target)) return false;
+  if (!networks.states[buf.networkId]?.dccChats) return false;
+  return !networks.isDccChatLive(buf.networkId, buf.target);
+}
 function dmTitle(buf: Buffer): string | undefined {
+  if (isDccChatClosed(buf)) return `DCC chat with ${dccChatPeer(buf.target)} is closed`;
   if (!isDmBuffer(buf)) return undefined;
   if (isPeerOffline(buf)) return `${buf.target} is offline`;
   if (isPeerAway(buf)) return `${buf.target} is away`;
@@ -1496,11 +1507,13 @@ onBeforeUnmount(() => {
   color: var(--fg-muted);
 }
 /* Offline: a parted or disconnected channel is a history view rather than a
-   live buffer, and a DM peer who is offline is not there to answer. One
-   colour for both, and italics, which stay under an unread colour. The label
-   alone, not the row: fading the row faded its tree guides too. */
+   live buffer, as is a DCC chat with no session, and a DM peer who is offline
+   is not there to answer. One colour for all, and italics, which stay under
+   an unread colour. The label alone, not the row: fading the row faded its
+   tree guides too. */
 .channels li.not-joined .label,
-.channels li.peer-offline .label {
+.channels li.peer-offline .label,
+.channels li.dcc-closed .label {
   color: var(--buffer-offline);
   font-style: italic;
 }
