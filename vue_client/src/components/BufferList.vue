@@ -182,7 +182,7 @@
                 :title="isNetOpen(net.id) ? 'Collapse network' : 'Expand network'"
                 :aria-label="isNetOpen(net.id) ? 'Collapse network' : 'Expand network'"
                 :aria-expanded="isNetOpen(net.id)"
-                @click.stop="toggleFold(net)"
+                @click.stop="onFoldClick(net, $event)"
                 @contextmenu.stop.prevent
               >
                 <ChevronDownIcon v-if="isNetOpen(net.id)" />
@@ -649,6 +649,14 @@ function toggleFold(net: Network): void {
   }
   if (visit.value.open === net.id) visit.value = { ...visit.value, open: null };
   if (!net.collapsed) networks.setCollapsed(net.id, true);
+}
+// The header's buttons show while anything in it has focus, and unlike its
+// neighbours this one opens nothing to take the focus away. So a mouse click
+// gives it up, or the buttons would stay after the pointer left. A keyboard
+// press (detail 0) keeps it, to press again.
+function onFoldClick(net: Network, e: MouseEvent): void {
+  toggleFold(net);
+  if (e.detail > 0) (e.currentTarget as HTMLElement | null)?.blur();
 }
 // What each closed network shows, by network id. Absent = open.
 const closedViews = computed(() => {
