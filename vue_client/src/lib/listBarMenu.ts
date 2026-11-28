@@ -11,8 +11,8 @@ import { ArchiveIcon, PlusIcon, ShareIcon, ShieldCogIcon } from '@lucide/vue';
 import type { ContextMenuItem } from '../composables/useContextMenu.js';
 
 export interface ListBarMenuState {
-  /** Why shares are off for this account, when they are: said in the row. */
-  sharesOff?: string | null;
+  /** Shares are off for this account: the row says so, and opens why. */
+  sharesOff?: boolean;
   /** The way into the DCC window is offered (the dcc store's entryShown). */
   dcc: boolean;
   /** DCC offers waiting for an answer. */
@@ -33,8 +33,9 @@ export function listBarMenuItems(
 ): ContextMenuItem[] {
   const items: ContextMenuItem[] = [
     {
-      // The bar's icon said why in its tooltip; a row has only its label.
-      label: state.sharesOff ? `Shares — ${state.sharesOff}` : 'Shares',
+      // Short: a menu row does not wrap, and the reason is a sentence. The
+      // row opens the account-limits window, which gives it.
+      label: state.sharesOff ? 'Shares (off)' : 'Shares',
       icon: ShareIcon,
       onClick: actions.shares,
     },
