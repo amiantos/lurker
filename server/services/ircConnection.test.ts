@@ -1513,10 +1513,18 @@ describe('refused-message handler routing (#283)', () => {
         other: ['2 is logged in from sessions', 'is hiding somewhere'],
       },
     ]);
-    // Taken once, and the next one is not the profile's unless it says so.
+    // Taken once.
     conn.client.emit('whois', { nick: 'Alice' });
     expect(results[1]).toEqual({ nick: 'Alice' });
-    expect(conn.profileWhois.size).toBe(0);
+  });
+
+  // The mark is the query's, not the nick's: a typed WHOIS of the same nick
+  // right behind the profile's still prints.
+  it('tells a profile WHOIS from another of the same nick behind it', () => {
+    const { conn, said } = whoisLinesFor(WHOIS_ALICE, 'WHOIS alice', true);
+    conn.raw('WHOIS alice');
+    for (const line of [WHOIS_ALICE[0]!, WHOIS_ALICE.at(-1)!]) emitRaw(conn, line);
+    expect(said()).toEqual(['Alice ~a host.test * Alice Example', 'Alice End of /WHOIS list.']);
   });
 
   it('prints any other WHOIS as before: a typed /quote, an MCP caller', () => {
@@ -1534,16 +1542,8 @@ describe('refused-message handler routing (#283)', () => {
   });
 
   it('does not take a WHOIS of several nicks for the profile', () => {
-    const { conn, said } = whoisLinesFor([WHOIS_ALICE[0]!], 'WHOIS alice,bob', true);
-    expect(conn.profileWhois.size).toBe(0);
+    const { said } = whoisLinesFor([WHOIS_ALICE[0]!], 'WHOIS alice,bob', true);
     expect(said()).toEqual(['Alice ~a host.test * Alice Example']);
-  });
-
-  it('starts each profile WHOIS clean of what an unfinished one left', () => {
-    const first = whoisLinesFor([WHOIS_ALICE[1]!], 'WHOIS alice', true);
-    expect(first.conn.whoisOther.size).toBe(1);
-    first.conn.raw('WHOIS alice', 'user', { profile: true });
-    expect(first.conn.whoisOther.size).toBe(0);
   });
 
   it('still says a profile WHOIS miss, without its end line', () => {
