@@ -14,10 +14,11 @@ import {
 } from '../utils/ignoreMatch.js';
 import { isChannelTarget } from '../../../shared/channels.js';
 
-// The two "mute" modifier levels (issue #359). A per-buffer or per-network mute
-// rung is a canonical rule carrying only these (no hide levels, no mask/pattern/
-// except), so the notification menus can find, read, and toggle it.
-const MUTE_LEVELS = new Set(['NOUNREAD', 'NONOTIFY']);
+// The modifier levels the notification menus write (issue #359; NOHIGHLIGHT is
+// their "Suppress Highlights" box, #1414). A per-buffer or per-network rule
+// carrying only these (no hide levels, no mask/pattern/except) is the canonical
+// one the menus find, read, and toggle.
+const MUTE_LEVELS = new Set(['NOUNREAD', 'NONOTIFY', 'NOHIGHLIGHT']);
 function isMuteOnlyLevels(levels: string[]): boolean {
   return levels.length > 0 && levels.every((l) => MUTE_LEVELS.has(l));
 }

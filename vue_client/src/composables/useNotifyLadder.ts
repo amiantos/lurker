@@ -11,25 +11,41 @@
 //   Network:  Highlights only (default) · Nothing · Muted  (no "All" — a network
 //             firehose makes no sense)
 //
+// Beside the ladder, channels and networks get a "Suppress Highlights" box
+// (#1414): on any rung, nothing said there highlights. Muted alone still
+// badges a highlight, which is the point of muting a room you follow; the box
+// is for a room where a mention of your nick is noise too. Not on DMs, where
+// the conversation itself is the signal, not a matched word.
+//
 // Under the hood the suppressor rungs are ignore rules: "Nothing" = a NONOTIFY
 // rule, "Muted" = NONOTIFY + NOUNREAD, both scoped to the buffer (channel/DM
 // target) or the whole network. "All messages" is the channel-only notify_always
-// flag. The rungs are mutually exclusive, so no conflicting state can be created
+// flag. The box adds NOHIGHLIGHT to that same rule (or is a rule of its own on
+// the rungs that have none). A highlight is stamped as a line arrives, so the
+// box changes what happens from then on, not lines already there.
+// The rungs are mutually exclusive, so no conflicting state can be created
 // from the menu; if a hand-typed /ignore contradicts, the ignore veto wins.
 
 import { CircleDotIcon, CircleIcon } from '@lucide/vue';
-import type { ContextMenuItem } from './useContextMenu.js';
+import { checkboxItem, type ContextMenuItem } from './useContextMenu.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useChannelNotifyStore } from '../stores/channelNotify.js';
 import { canonicalizeLevels, type IgnoreRule } from '../utils/ignoreMatch.js';
 
 type Rung = 'all' | 'highlights' | 'nothing' | 'muted';
 
-// Levels for the suppressor rungs; 'all'/'highlights' carry no ignore rule.
-function levelsForRung(rung: Rung): string[] | null {
-  if (rung === 'nothing') return canonicalizeLevels(['NONOTIFY']);
-  if (rung === 'muted') return canonicalizeLevels(['NOUNREAD', 'NONOTIFY']);
-  return null;
+// The rule's levels for a rung and the Suppress Highlights box; null when it
+// takes no rule at all ('all'/'highlights' with the box clear).
+function levelsFor(rung: Rung, suppress: boolean): string[] | null {
+  const levels: string[] = [];
+  if (rung === 'nothing' || rung === 'muted') levels.push('NONOTIFY');
+  if (rung === 'muted') levels.push('NOUNREAD');
+  if (suppress) levels.push('NOHIGHLIGHT');
+  return levels.length ? canonicalizeLevels(levels) : null;
+}
+
+function suppresses(rule: { levels: string[] } | null): boolean {
+  return !!rule && rule.levels.includes('NOHIGHLIGHT');
 }
 
 function sameLevels(a: string[], b: string[]): boolean {
@@ -86,17 +102,22 @@ export function useNotifyLadder() {
   // ---- Channel: 4 rungs (notify_always + buffer mute rule) ------------------
   function channelItems(networkId: number, target: string): ContextMenuItem[] {
     const notifyAlways = channelNotify.notifyAlways(networkId, target);
-    const levels = ignores.bufferMuteRule(networkId, target)?.levels ?? [];
-    const current: Rung = notifyAlways ? 'all' : rungFromLevels(levels, 'highlights');
+    const shown = ignores.bufferMuteRule(networkId, target);
+    const rungOf = (levels: string[]): Rung =>
+      channelNotify.notifyAlways(networkId, target) ? 'all' : rungFromLevels(levels, 'highlights');
+    const current: Rung = notifyAlways ? 'all' : rungFromLevels(shown?.levels ?? [], 'highlights');
     // Each rung is a target, so it reconciles against the state as it is when
-    // tapped, not as it was when the menu opened (#1136).
+    // tapped, not as it was when the menu opened (#1136). A rung keeps the box
+    // as it stands, and the box keeps the rung.
+    const write = (rung: Rung, suppress: boolean) => {
+      const rule = ignores.bufferMuteRule(networkId, target);
+      reconcileRule(networkId, rule, levelsFor(rung, suppress), [target.toLowerCase()]);
+    };
     const set = (rung: Rung) => {
       if ((rung === 'all') !== channelNotify.notifyAlways(networkId, target)) {
         channelNotify.setNotifyAlways(networkId, target, rung === 'all');
       }
-      reconcileRule(networkId, ignores.bufferMuteRule(networkId, target), levelsForRung(rung), [
-        target.toLowerCase(),
-      ]);
+      write(rung, suppresses(ignores.bufferMuteRule(networkId, target)));
     };
     return [
       { heading: 'Notifications' },
@@ -104,6 +125,9 @@ export function useNotifyLadder() {
       rungItem('Highlights only', current === 'highlights', () => set('highlights')),
       rungItem('Nothing', current === 'nothing', () => set('nothing')),
       rungItem('Muted', current === 'muted', () => set('muted')),
+      checkboxItem('Suppress Highlights', suppresses(shown), (next) =>
+        write(rungOf(ignores.bufferMuteRule(networkId, target)?.levels ?? []), next),
+      ),
     ];
   }
 
@@ -111,10 +135,11 @@ export function useNotifyLadder() {
   function dmItems(networkId: number, target: string): ContextMenuItem[] {
     const levels = ignores.bufferMuteRule(networkId, target)?.levels ?? [];
     const current: Rung = rungFromLevels(levels, 'all');
-    const set = (rung: Rung) =>
-      reconcileRule(networkId, ignores.bufferMuteRule(networkId, target), levelsForRung(rung), [
-        target.toLowerCase(),
-      ]);
+    // No box here, but a hand-typed NOHIGHLIGHT on the rule is kept.
+    const set = (rung: Rung) => {
+      const rule = ignores.bufferMuteRule(networkId, target);
+      reconcileRule(networkId, rule, levelsFor(rung, suppresses(rule)), [target.toLowerCase()]);
+    };
     return [
       { heading: 'Notifications' },
       rungItem('All messages', current === 'all', () => set('all')),
@@ -125,15 +150,19 @@ export function useNotifyLadder() {
 
   // ---- Network: 3 rungs (network-wide mute rule) ----------------------------
   function networkItems(networkId: number): ContextMenuItem[] {
-    const levels = ignores.networkMuteRule(networkId)?.levels ?? [];
-    const current: Rung = rungFromLevels(levels, 'highlights');
-    const set = (rung: Rung) =>
-      reconcileRule(networkId, ignores.networkMuteRule(networkId), levelsForRung(rung), null);
+    const shown = ignores.networkMuteRule(networkId);
+    const current: Rung = rungFromLevels(shown?.levels ?? [], 'highlights');
+    const write = (rung: Rung, suppress: boolean) =>
+      reconcileRule(networkId, ignores.networkMuteRule(networkId), levelsFor(rung, suppress), null);
+    const set = (rung: Rung) => write(rung, suppresses(ignores.networkMuteRule(networkId)));
     return [
       { heading: 'Notifications' },
       rungItem('Highlights only', current === 'highlights', () => set('highlights')),
       rungItem('Nothing', current === 'nothing', () => set('nothing')),
       rungItem('Muted', current === 'muted', () => set('muted')),
+      checkboxItem('Suppress Highlights', suppresses(shown), (next) =>
+        write(rungFromLevels(ignores.networkMuteRule(networkId)?.levels ?? [], 'highlights'), next),
+      ),
     ];
   }
 
