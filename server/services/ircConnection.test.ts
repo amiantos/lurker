@@ -1455,7 +1455,7 @@ describe('refused-message handler routing (#283)', () => {
   });
 
   it('says nothing in the channel for a topic nobody asked for', () => {
-    const { said } = topicLinesFor(
+    const { said, publish } = topicLinesFor(
       [
         ':irc.example.test 332 nick #anime :Welcome',
         ':irc.example.test 333 nick #anime alice 1700000000',
@@ -1463,6 +1463,8 @@ describe('refused-message handler routing (#283)', () => {
       null,
     );
     expect(said).toEqual([]);
+    // Nor in the server buffer: a JOIN's topic is the topic bar's.
+    expect(publish).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'motd' }));
   });
 
   it('leaves a topic for a channel we are not in to the server buffer', () => {

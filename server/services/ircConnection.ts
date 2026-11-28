@@ -2669,6 +2669,16 @@ export class IrcConnection {
         };
       }
       if (isServerBufferDeniedNumeric(rawCommand) && !namesElsewhere) return;
+      // The topic a JOIN volunteers, for a channel we're in: the topic bar is
+      // where it shows, as the nicklist is for the NAMES beside it. One the
+      // user asked for (/topic) keeps its line here.
+      if (
+        (rawCommand === '332' || rawCommand === '333') &&
+        this.replyOwner === 'unasked' &&
+        this.isChannelJoined(String(msg?.params?.[1] ?? ''))
+      ) {
+        return;
+      }
       if (
         RESTORE_QUIET_NUMERICS.has(rawCommand) &&
         this.isRestoreQuiet(rawCommand, rawCommand === '221' ? '*' : msg?.params?.[1])
