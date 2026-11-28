@@ -94,6 +94,18 @@
             ><template v-else-if="g.kind === 'joinedAndLeft'"> joined briefly</template
             ><template v-else-if="g.kind === 'rehosted'"> changed host</template
             ><template v-else-if="g.letter">{{ modePhrase(g) }}</template></template
+          ><button
+            type="button"
+            class="cons-toggle"
+            :aria-expanded="!!row.expanded"
+            :aria-label="row.expanded ? 'Hide each event' : 'Show each event'"
+            :title="row.expanded ? 'Hide each event' : 'Show each event'"
+            @click="toggleRun(row)"
+          >
+            <component
+              :is="row.expanded ? ChevronDownIcon : ChevronRightIcon"
+              aria-hidden="true"
+            /></button
           ><!-- Compact: the time follows the text, as on every compact row. --><span
             v-if="compactMode && !row.continuationTime"
             class="time trailing"
@@ -503,7 +515,14 @@ import { emitJumpIntent } from '../composables/useJumpIntent.js';
 import { setUnreadDividerShown } from '../lib/unreadDivider.js';
 import { orderByTime } from '../lib/messageOrder.js';
 import { logLine, rowsInSelection, trimBlankEdges, type LogContext } from '../lib/copyLog.js';
-import { CopyIcon, IdCardIcon, MessageSquareReplyIcon, SatelliteDishIcon } from '@lucide/vue';
+import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  CopyIcon,
+  IdCardIcon,
+  MessageSquareReplyIcon,
+  SatelliteDishIcon,
+} from '@lucide/vue';
 
 // Extended BufferMessage fields accessed in the template and script
 // (beyond the core BufferMessage definition which uses [key: string]: unknown).
@@ -599,6 +618,9 @@ interface RenderRow {
   time?: string;
   firstId?: number | string | null;
   lastId?: number | string | null;
+  // The rows the summary folded, and whether they are drawn under it (#1430).
+  rows?: readonly RenderRow[];
+  expanded?: boolean;
   // Display-collapsing tags (mutated by collapseDisplay)
   continuationAuthor?: boolean;
   continuationTime?: boolean;
@@ -668,6 +690,31 @@ const tsFormat = computed(() =>
 
 const scroller = ref<HTMLElement | null>(null);
 const stickToBottom = ref(true);
+
+// Consolidated runs the reader has opened (#1430), as the row keys of their
+// events. A run is open while ANY of its rows is in here: a run grows at
+// either end (a live join, an older page), so no one key names it for long.
+// Message ids, so one set serves every buffer. Kept for the life of the list,
+// not saved: this is someone looking into one burst of joins.
+const expandedRuns = ref(new Set<string | number>());
+
+async function toggleRun(row: RenderRow) {
+  const rows = row.rows ?? [];
+  if (rows.length === 0) return;
+  const next = new Set(expandedRuns.value);
+  if (row.expanded) for (const r of rows) next.delete(r.key);
+  else next.add(rows[0].key);
+  expandedRuns.value = next;
+  // The rows open under the summary, which stays where it was clicked. No
+  // scroll event says the list got taller, so a reader who was at the bottom
+  // would still count as pinned, and the next line would pull them off the
+  // rows they just opened.
+  await nextTick();
+  const el = scroller.value;
+  if (!el) return;
+  stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+  setStuckToBottom(stickToBottom.value);
+}
 const { scrollToBottomToken, scrollToUnreadToken } = useScrollState();
 
 // Unread-divider visibility tracking. The divider is pinned for the whole
@@ -1764,6 +1811,7 @@ const renderRows = computed((): RenderRow[] => {
       enabled: true,
       maxNames: consolidateMaxNames.value,
       recentSpeakers: speakers,
+      isExpanded: (run) => run.some((r) => expandedRuns.value.has(r.key)),
     }) as RenderRow[];
   }
   // Per-row display collapsing (nick + timestamp dedupe). Runs over the same
@@ -3535,6 +3583,24 @@ watch(
   min-width: 0;
   text-align: center;
   overflow-wrap: anywhere;
+}
+
+/* The disclosure on a consolidated summary (#1430): opens the events it
+   folded underneath it. An icon in the line's own colour, so the summary
+   still reads as one muted line. */
+.cons-toggle {
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 0.5ch;
+  vertical-align: middle;
+  display: inline-flex;
+}
+.cons-toggle:hover {
+  color: var(--accent);
 }
 
 /* Undo affordance on the /clear divider — text-only button styled inline

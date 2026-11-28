@@ -389,3 +389,51 @@ describe('chghost consolidation (#593)', () => {
     expect(row.groups[0].visible).toHaveLength(2);
   });
 });
+
+describe('an opened run (#1430)', () => {
+  const run = () => [ev('join', 'alice'), ev('quit', 'bob'), ev('join', 'carol')];
+
+  it('carries the rows it folded', () => {
+    const row = onlyRow(run());
+    expect(row.rows.map((r) => r.key)).toEqual([1, 2, 3]);
+    expect(row.expanded).toBeUndefined();
+  });
+
+  it('keeps its summary and lists its rows under it', () => {
+    const rows = consolidateMessages(run(), { isExpanded: () => true });
+    expect(isConsolidation(rows[0])).toBe(true);
+    expect((rows[0] as ConsolidationRow).expanded).toBe(true);
+    expect(summarize((rows[0] as ConsolidationRow).groups)).toEqual({
+      joined: ['alice', 'carol'],
+      left: ['bob'],
+    });
+    expect(rows.slice(1).map((r) => r.key)).toEqual([1, 2, 3]);
+  });
+
+  it('is asked per run, with that run', () => {
+    const messages = [...run(), ev('message', 'dave'), ev('join', 'erin'), ev('join', 'frank')];
+    const rows = consolidateMessages(messages, {
+      isExpanded: (r) => r.some((x) => x.key === 5),
+    });
+    // First run stays folded; the second is open: summary, then its two rows.
+    expect(rows.map((r) => (isConsolidation(r) ? 'cons' : r.key))).toEqual([
+      'cons',
+      4,
+      'cons',
+      5,
+      6,
+    ]);
+    expect((rows[0] as ConsolidationRow).expanded).toBeUndefined();
+  });
+
+  it('never asks about a lone event', () => {
+    let asked = 0;
+    consolidateMessages([ev('join', 'alice')], {
+      isExpanded: () => {
+        asked += 1;
+        return true;
+      },
+    });
+    expect(asked).toBe(0);
+  });
+});

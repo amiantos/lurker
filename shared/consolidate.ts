@@ -137,12 +137,22 @@ export interface ConsolidationRow {
   firstId: number | string | null;
   lastId: number | string | null;
   key: string;
+  /** The rows the summary stands for, in order: what a reader expands it into. */
+  rows: readonly MessageStreamRow[];
+  /** Set when those rows follow the summary in the list (`isExpanded`). */
+  expanded?: true;
 }
 
 export interface ConsolidateOptions {
   enabled?: boolean;
   recentSpeakers?: Iterable<string> | null;
   maxNames?: number;
+  /**
+   * Whether the reader has opened this run (#1430). An open run keeps its
+   * summary and is followed by its own rows, so the summary reads as the
+   * heading of what it folded. Asked once per run of two or more.
+   */
+  isExpanded?: (rows: readonly MessageStreamRow[]) => boolean;
 }
 
 /** Mutable per-identity bookkeeping while walking a run. */
@@ -482,6 +492,7 @@ export function consolidateRows<R extends MessageStreamRow>(
       run = [];
       return;
     }
+    const expanded = !!options.isExpanded?.(run);
     out.push({
       consolidation: true,
       groups,
@@ -490,7 +501,10 @@ export function consolidateRows<R extends MessageStreamRow>(
       firstId: events[0].id ?? null,
       lastId: events[events.length - 1].id ?? null,
       key: `cons:${run[0].key}-${run[run.length - 1].key}`,
+      rows: run,
+      ...(expanded ? { expanded } : {}),
     });
+    if (expanded) out.push(...run);
     run = [];
   };
 
