@@ -98,9 +98,9 @@
             type="button"
             class="cons-toggle"
             :aria-expanded="!!row.expanded"
-            :aria-label="row.expanded ? 'Hide each event' : 'Show each event'"
+            aria-label="Each event"
             :title="row.expanded ? 'Hide each event' : 'Show each event'"
-            @click="toggleRun(row)"
+            @click="toggleRun(row, $event)"
           >
             <component
               :is="row.expanded ? ChevronDownIcon : ChevronRightIcon"
@@ -428,7 +428,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
+import { ref, shallowRef, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import type { CSSProperties, ComponentPublicInstance, ComputedRef } from 'vue';
 import { useNetworksStore, type AwayState } from '../stores/networks.js';
 import { useBuffersStore, type BufferMember } from '../stores/buffers.js';
@@ -693,25 +693,35 @@ const stickToBottom = ref(true);
 
 // Consolidated runs the reader has opened (#1430), as the row keys of their
 // events. A run is open while ANY of its rows is in here: a run grows at
-// either end (a live join, an older page), so no one key names it for long.
-// Message ids, so one set serves every buffer. Kept for the life of the list,
-// not saved: this is someone looking into one burst of joins.
-const expandedRuns = ref(new Set<string | number>());
+// either end (a live join, an older page) and loses rows too (the buffer's
+// cap evicts its oldest), so every row of it is recorded, not one. Message
+// ids, so one set serves every buffer. Kept for the life of the list, not
+// saved: this is someone looking into one burst of joins. Replaced whole on
+// every change, so a shallow ref.
+const expandedRuns = shallowRef(new Set<string | number>());
 
-async function toggleRun(row: RenderRow) {
+async function toggleRun(row: RenderRow, event: MouseEvent) {
   const rows = row.rows ?? [];
   if (rows.length === 0) return;
   const next = new Set(expandedRuns.value);
   if (row.expanded) for (const r of rows) next.delete(r.key);
-  else next.add(rows[0].key);
+  else for (const r of rows) next.add(r.key);
+  const line = (event.currentTarget as HTMLElement | null)?.closest<HTMLElement>('.line');
+  const wasPinned = stickToBottom.value;
   expandedRuns.value = next;
-  // The rows open under the summary, which stays where it was clicked. No
-  // scroll event says the list got taller, so a reader who was at the bottom
-  // would still count as pinned, and the next line would pull them off the
-  // rows they just opened.
   await nextTick();
   const el = scroller.value;
   if (!el) return;
+  // The rows open under the summary. A reader at the bottom who opens the
+  // last summary would see nothing happen, so follow the new rows down, but
+  // never so far that the summary they clicked leaves the top of the view.
+  if (wasPinned && line?.isConnected) {
+    const above = line.getBoundingClientRect().top - el.getBoundingClientRect().top;
+    el.scrollTop = Math.min(el.scrollHeight - el.clientHeight, el.scrollTop + above);
+  }
+  // No scroll event says the list got taller: a reader left short of the
+  // bottom would still count as pinned, and the next line would pull them
+  // off the rows they just opened.
   stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
   setStuckToBottom(stickToBottom.value);
 }
@@ -1811,7 +1821,8 @@ const renderRows = computed((): RenderRow[] => {
       enabled: true,
       maxNames: consolidateMaxNames.value,
       recentSpeakers: speakers,
-      isExpanded: (run) => run.some((r) => expandedRuns.value.has(r.key)),
+      isExpanded: (run) =>
+        expandedRuns.value.size > 0 && run.some((r) => expandedRuns.value.has(r.key)),
     }) as RenderRow[];
   }
   // Per-row display collapsing (nick + timestamp dedupe). Runs over the same
@@ -3594,8 +3605,12 @@ watch(
   color: inherit;
   font: inherit;
   cursor: pointer;
-  padding: 0;
-  margin-left: 0.5ch;
+  /* A finger-sized target next to the summary's nicks, each a tap target of
+     its own. The negative margin gives the padding back, so the line is laid
+     out as if the button were the bare icon, 0.5ch after the text. */
+  padding: 0.4em;
+  margin: -0.4em;
+  margin-left: calc(0.5ch - 0.4em);
   /* Left inline, so the icon's own vertical-align (.lucide) centres it on the
      text's x-height as it does everywhere else. */
 }
