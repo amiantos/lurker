@@ -24,6 +24,9 @@ export interface ContextMenuItem {
   // A non-interactive small-caps group label (e.g. "Notifications" above a radio
   // group). Rendered as a muted heading row; other fields ignored.
   heading?: string;
+  // A non-interactive line of plain muted text, e.g. why the rows above are
+  // disabled. Other fields ignored.
+  note?: string;
 }
 
 // A checkbox row: an on/off switch that keeps its label and shows its state
