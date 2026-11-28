@@ -691,24 +691,44 @@ const tsFormat = computed(() =>
 const scroller = ref<HTMLElement | null>(null);
 const stickToBottom = ref(true);
 
-// Consolidated runs the reader has opened (#1430), as the row keys of their
-// events. A run is open while ANY of its rows is in here: a run grows at
-// either end (a live join, an older page) and loses rows too (the buffer's
-// cap evicts its oldest), so every row of it is recorded, not one. Message
-// ids, so one set serves every buffer. Kept for the life of the list, not
-// saved: this is someone looking into one burst of joins. Replaced whole on
-// every change, so a shallow ref.
-const expandedRuns = shallowRef(new Set<string | number>());
+// Consolidated runs the reader has opened (#1430): one set per run, of the
+// row keys of its events. A run is open while ANY of its rows is in one. A
+// run grows at either end (a live join, an older page) and loses rows too
+// (the buffer's cap evicts its oldest), so no one key names it for long:
+// isRunExpanded adds a run's new rows to its set as they are drawn, and
+// closing drops the whole set, rows no longer loaded included. Message ids,
+// so one list serves every buffer. Kept for the life of the list, not saved:
+// this is someone looking into one burst of joins. The array is replaced on
+// open and close, so a shallow ref.
+type RunKeys = Set<string | number>;
+const expandedRuns = shallowRef<RunKeys[]>([]);
+
+function isRunExpanded(run: readonly { key: string | number }[]): boolean {
+  const sets = expandedRuns.value;
+  if (sets.length === 0) return false;
+  const open = sets.find((keys) => run.some((r) => keys.has(r.key)));
+  if (!open) return false;
+  // In place, and not a change anyone is told about: the answer for this run
+  // is the same before and after.
+  for (const r of run) open.add(r.key);
+  return true;
+}
+
+function openRun(rows: readonly RenderRow[]) {
+  expandedRuns.value = [...expandedRuns.value, new Set(rows.map((r) => r.key))];
+}
+
+function closeRun(rows: readonly RenderRow[]) {
+  expandedRuns.value = expandedRuns.value.filter((keys) => !rows.some((r) => keys.has(r.key)));
+}
 
 async function toggleRun(row: RenderRow, event: MouseEvent) {
   const rows = row.rows ?? [];
   if (rows.length === 0) return;
-  const next = new Set(expandedRuns.value);
-  if (row.expanded) for (const r of rows) next.delete(r.key);
-  else for (const r of rows) next.add(r.key);
   const line = (event.currentTarget as HTMLElement | null)?.closest<HTMLElement>('.line');
   const wasPinned = stickToBottom.value;
-  expandedRuns.value = next;
+  if (row.expanded) closeRun(rows);
+  else openRun(rows);
   await nextTick();
   const el = scroller.value;
   if (!el) return;
@@ -1821,8 +1841,7 @@ const renderRows = computed((): RenderRow[] => {
       enabled: true,
       maxNames: consolidateMaxNames.value,
       recentSpeakers: speakers,
-      isExpanded: (run) =>
-        expandedRuns.value.size > 0 && run.some((r) => expandedRuns.value.has(r.key)),
+      isExpanded: isRunExpanded,
     }) as RenderRow[];
   }
   // Per-row display collapsing (nick + timestamp dedupe). Runs over the same
@@ -2128,9 +2147,7 @@ function openFoldedRun(id: number | string): boolean {
     (r) => r.consolidation && !r.expanded && r.rows?.some((x) => String(x.m?.id) === String(id)),
   );
   if (!run?.rows) return false;
-  const next = new Set(expandedRuns.value);
-  for (const r of run.rows) next.add(r.key);
-  expandedRuns.value = next;
+  openRun(run.rows);
   return true;
 }
 

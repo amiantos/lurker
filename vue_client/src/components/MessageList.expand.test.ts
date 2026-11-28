@@ -102,6 +102,34 @@ describe('MessageList — an opened summary', () => {
     expect([run[1], run[2], late].every((m) => shown(w, m.id))).toBe(true);
   });
 
+  it('stays open when every event it was opened with is gone', async () => {
+    const run = [row('join', 'alice'), row('quit', 'bob')];
+    const { w, b } = mountWith(run);
+    await toggle(w).trigger('click');
+
+    const late = [row('join', 'carol'), row('join', 'erin')];
+    b.messages = [...run, ...late] as never;
+    await w.vm.$nextTick();
+    b.messages = late as never;
+    await w.vm.$nextTick();
+    expect(late.every((m) => shown(w, m.id))).toBe(true);
+  });
+
+  it('closed, stays closed when an evicted event of it is loaded again', async () => {
+    const run = [row('join', 'alice'), row('quit', 'bob'), row('join', 'carol')];
+    const { w, b } = mountWith(run);
+    await toggle(w).trigger('click');
+    b.messages = run.slice(1) as never;
+    await w.vm.$nextTick();
+    await toggle(w).trigger('click');
+    expect(run.some((m) => shown(w, m.id))).toBe(false);
+
+    // An older page brings the evicted row back.
+    b.messages = run as never;
+    await w.vm.$nextTick();
+    expect(run.some((m) => shown(w, m.id))).toBe(false);
+  });
+
   it('opens for a jump onto an event it folded', async () => {
     const run = [row('join', 'alice'), row('quit', 'bob'), row('join', 'carol')];
     const { w } = mountWith([row('message', 'dave'), ...run]);
