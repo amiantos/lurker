@@ -92,6 +92,30 @@ describe('BufferList row states', () => {
     expect(classesOf('#plain')).not.toContain('not-joined');
   });
 
+  // A `=nick` DCC chat with no live session reads as offline, like a parted
+  // channel; by the session, not the IRC link.
+  it('marks a DCC chat with no live session, once the live ones are known', async () => {
+    const networks = useNetworksStore();
+    const buffers = useBuffersStore();
+    for (const target of ['=live', '=closed']) {
+      buffers.buffers[`1::${target}`] = {
+        networkId: 1,
+        target,
+        members: [],
+        messages: [],
+        unread: 0,
+        highlighted: 0,
+      } as never;
+    }
+    await wrapper!.vm.$nextTick();
+    // Not yet said which are live: nothing is marked.
+    expect(classesOf('=closed')).not.toContain('dcc-closed');
+    networks.states[1] = { ...networks.states[1]!, dccChats: ['Live'] } as never;
+    await wrapper!.vm.$nextTick();
+    expect(classesOf('=closed')).toContain('dcc-closed');
+    expect(classesOf('=live')).not.toContain('dcc-closed');
+  });
+
   it('marks a row that is both as both, for the stylesheet to rank', () => {
     expect(classesOf('#both')).toEqual(expect.arrayContaining(['muted', 'not-joined']));
   });
@@ -109,8 +133,9 @@ describe('BufferList row states', () => {
       '.channels li .label {\n  color: var(--buffer-name);',
       '.channels li.muted .label {\n  color: var(--buffer-muted);',
       '.channels li.peer-away .label {\n  color: var(--fg-muted);',
-      // A not-joined channel and an offline DM peer: one rule, one colour.
-      '.channels li.not-joined .label,\n.channels li.peer-offline .label {\n  color: var(--buffer-offline);\n  font-style: italic;',
+      // A not-joined channel, an offline DM peer and a closed DCC chat: one
+      // rule, one colour.
+      '.channels li.not-joined .label,\n.channels li.peer-offline .label,\n.channels li.dcc-closed .label {\n  color: var(--buffer-offline);\n  font-style: italic;',
       '.channels li.unread .label {\n  color: var(--buffer-unread);',
       '.channels li.highlighted .label {\n  color: var(--buffer-highlight);',
     ].map(at);
