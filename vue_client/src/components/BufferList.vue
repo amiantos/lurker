@@ -176,10 +176,7 @@
               unreadLabel(netHeadCount(net.id))
             }}</span>
             <div class="net-actions">
-              <!-- Not in accordion mode: every network is folded there, and
-                   which one is open follows where you are. -->
               <button
-                v-if="!accordion"
                 type="button"
                 class="net-action"
                 :title="isNetOpen(net.id) ? 'Collapse network' : 'Expand network'"
@@ -394,7 +391,7 @@ import {
   isNetworkOpen,
   stepVisit,
   type VisitState,
-} from '../utils/networkAccordion.js';
+} from '../utils/networkFold.js';
 import { hidesMutedRow } from '../utils/mutedRows.js';
 import {
   ChevronDownIcon,
@@ -604,14 +601,12 @@ function unpinnedBufs(networkId: number): Buffer[] {
     });
 }
 
-// Folding networks (#1432): by hand per network, or all of them in accordion
-// mode. Going into a folded network opens it for the visit; leaving folds it
-// again. See utils/networkAccordion for the rules; this is the wiring.
+// Folding networks (#1432), by hand per network. Going into a folded network opens it for the visit; leaving folds it
+// again. See utils/networkFold for the rules; this is the wiring.
 //
 // The phone layout passes `no-fold`: it has no chevron, and a network folded
 // on the desktop would arrive there with no way to open it for good.
 const props = defineProps<{ noFold?: boolean }>();
-const accordion = computed(() => !!settings.effective('look.buffer_list.accordion'));
 const visit = ref<VisitState>({ open: null, last: null });
 // Where you are: the active buffer, and whether it is listed as a favorite.
 // Both, because favorites load after the first buffer is active, and a buffer
@@ -641,7 +636,6 @@ function isNetOpen(networkId: number): boolean {
   return isNetworkOpen({
     id: networkId,
     collapsed: !!networks.networkById(networkId)?.collapsed,
-    accordion: accordion.value,
     openNetworkId: visit.value.open,
   });
 }
@@ -1209,7 +1203,7 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--border);
   margin-top: var(--space-2);
 }
-/* A network showing only its header (closed in accordion mode, or one with no
+/* A network showing only its header (folded, or one with no
    channels): the bottom padding is there to space the rows off the next rule,
    and with no rows it leaves the header sitting high in its band. Without it
    the next group's top margin matches the padding above the header. */

@@ -12,8 +12,7 @@ A tour of the Lurker window and how messages are organized.
 - The buffer list: pinning, rearranging, and unread indicators.
 - Folding a network: the chevron on a network's row folds it down to its
   name. A folded network still lists any channel or DM with a highlight, and
-  opens while you are in it. **Collapse other networks** (Settings →
-  Appearance) folds every network but the one you are in.
+  opens while you are in it.
 - **Hide Muted Channels**, in a network's menu, leaves that network's muted
   channels and DMs out of the list until they have a highlight. Pinned and
   favorited ones stay, and the quick switcher still finds them.

@@ -1,13 +1,12 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// Folding networks in the sidebar (#1432). A network can be folded down to its
-// header row two ways: by hand, per network (`collapsed`, stored on the server
-// so it follows the user between devices), or all at once by accordion mode
-// (`look.buffer_list.accordion`), which treats every network as folded.
+// Folding networks in the sidebar (#1432). A network is folded down to its
+// header row by hand (`collapsed`, stored on the server so it follows the
+// user between devices).
 //
-// Either way, going into a folded network opens it for the visit and leaving
-// folds it again. The visit is not stored: it follows the active buffer, so
+// Going into a folded network opens it for the visit and leaving folds it
+// again. The visit is not stored: it follows the active buffer, so
 // every way of getting somewhere (a click, Alt+arrow, the quick switcher, a
 // notification) is covered and keyboard order is untouched. Folding a network
 // while in it ends the visit early: it drops to its header and the one buffer
@@ -50,13 +49,11 @@ export function isNetworkOpen(net: {
   id: number;
   // Folded by hand.
   collapsed: boolean;
-  // Accordion mode is on.
-  accordion: boolean;
   // VisitState.open.
   openNetworkId: number | null;
 }): boolean {
   if (net.openNetworkId === net.id) return true;
-  return !net.collapsed && !net.accordion;
+  return !net.collapsed;
 }
 
 export interface ClosedNetworkView<T> {

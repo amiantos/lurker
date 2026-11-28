@@ -5,7 +5,7 @@
 
 // Folding at the mounted sidebar (#1432): a folded network opens while you
 // are in it and folds when you leave, however you got in and wherever you go.
-// utils/networkAccordion.test.ts covers the rules.
+// utils/networkFold.test.ts covers the rules.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { defineComponent, h, nextTick } from 'vue';

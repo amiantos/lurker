@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { closedNetworkView, isNetworkOpen, stepVisit } from './networkAccordion.js';
+import { closedNetworkView, isNetworkOpen, stepVisit } from './networkFold.js';
 
 describe('stepVisit', () => {
   const none = { open: null, last: null };
@@ -50,7 +50,7 @@ describe('stepVisit', () => {
 
 describe('isNetworkOpen', () => {
   const net = (over: Partial<Parameters<typeof isNetworkOpen>[0]> = {}) =>
-    isNetworkOpen({ id: 1, collapsed: false, accordion: false, openNetworkId: null, ...over });
+    isNetworkOpen({ id: 1, collapsed: false, openNetworkId: null, ...over });
 
   it('is open by default', () => {
     expect(net()).toBe(true);
@@ -63,12 +63,6 @@ describe('isNetworkOpen', () => {
 
   it('shows a folded network open for a visit', () => {
     expect(net({ collapsed: true, openNetworkId: 1 })).toBe(true);
-  });
-
-  it('closes every network but the visited one in accordion mode', () => {
-    expect(net({ accordion: true })).toBe(false);
-    expect(net({ accordion: true, openNetworkId: 2 })).toBe(false);
-    expect(net({ accordion: true, openNetworkId: 1 })).toBe(true);
   });
 });
 

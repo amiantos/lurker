@@ -706,20 +706,6 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     description: 'Bold the names of rows with unread messages or highlights.',
   },
   {
-    // Desktop layout only (the phone layout mounts BufferList with no-fold).
-    // Which network is open is not stored: it follows
-    // the active buffer (utils/networkAccordion).
-    key: 'look.buffer_list.accordion',
-    label: 'Collapse other networks',
-    category: 'appearance',
-    group: 'buffer-list',
-    type: 'bool',
-    default: false,
-    description:
-      'List channels only for the network you are in. Other networks show just ' +
-      'their name, with any highlighted channel or DM under it.',
-  },
-  {
     key: 'look.buffer_list.unread_display',
     label: 'Unread indicator display',
     category: 'appearance',
