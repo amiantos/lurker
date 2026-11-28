@@ -4,7 +4,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { computed } from 'vue';
-import { bumpThemeEpoch, themeColor } from './cssColor.js';
+import { bumpThemeEpoch, refersToVar, themeColor } from './cssColor.js';
 
 // The engine's answer for a probe, stubbed: what a var() resolves to is the
 // theme's business, and the theme is what changes under the cache here.
@@ -58,5 +58,20 @@ describe('themeColor', () => {
     expect(themeColor('var(--nope)')).toBeNull();
     expect(themeColor('var(--nope)')).toBeNull();
     expect(spy.mock.calls.length).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('refersToVar', () => {
+  it('is a reference to exactly that variable', () => {
+    expect(refersToVar('var(--fg)', '--fg')).toBe(true);
+    expect(refersToVar('  var( --fg-muted ) ', '--fg-muted')).toBe(true);
+  });
+
+  it('is not another variable, a literal, or nothing', () => {
+    expect(refersToVar('var(--fg-muted)', '--fg')).toBe(false);
+    expect(refersToVar('#777777', '--fg')).toBe(false);
+    expect(refersToVar('', '--fg')).toBe(false);
+    expect(refersToVar(undefined, '--fg')).toBe(false);
+    expect(refersToVar('var(--fg)', undefined)).toBe(false);
   });
 });

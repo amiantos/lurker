@@ -9,7 +9,7 @@
 // THEMED_KEYS). Built-ins are code, not rows: Dark IS the registry defaults
 // (computed on demand so a default change never needs a data migration), and
 // Light overrides only the literal colors — keys whose default is a var()
-// reference (link, self nick, buffer unread/highlight, alt row bg) keep the
+// reference (link, self nick, the buffer list's colours, alt row bg) keep the
 // reference so they track whichever palette is active.
 //
 // The mIRC palette is NOT among them: all sixteen slots are literals in both

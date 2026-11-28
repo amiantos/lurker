@@ -879,15 +879,16 @@ function onRowActionsClick(e: MouseEvent, buf: Buffer): void {
 }
 
 function rowClasses(buf: Buffer, networkId: number): Record<string, boolean> {
+  const muted = isChannelMuted(buf);
   return {
     active: isActive(networkId, buf.target),
     // Muted channels withhold the plain-unread cue (color/bold/edge arrow all
     // key off this class). `highlighted` is left untouched so mentions still
     // light the row up in the highlight color.
-    unread: buf.unread > 0 && !isChannelMuted(buf),
+    unread: buf.unread > 0 && !muted,
     highlighted: buf.highlighted > 0,
     // The resting states (#1433), each with a colour of its own.
-    muted: isChannelMuted(buf),
+    muted,
     'not-joined': isUnjoined(buf, networkId),
     'peer-away': isPeerAway(buf),
     'peer-offline': isPeerOffline(buf),

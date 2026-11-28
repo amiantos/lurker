@@ -96,8 +96,8 @@ describe('BufferList row states', () => {
     expect(classesOf('#both')).toEqual(expect.arrayContaining(['muted', 'not-joined']));
   });
 
-  // Equal specificity, so the later rule wins. happy-dom does not cascade, so
-  // the order is read.
+  // No state rule is more specific than another, so the later one wins.
+  // happy-dom does not cascade, so the order is read.
   it('ranks the colours: name, muted, away, offline, unread, highlighted', () => {
     const css = bufferListSource.split('<style scoped>')[1];
     const at = (rule: string) => {
