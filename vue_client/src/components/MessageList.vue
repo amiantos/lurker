@@ -94,6 +94,18 @@
             ><template v-else-if="g.kind === 'joinedAndLeft'"> joined briefly</template
             ><template v-else-if="g.kind === 'rehosted'"> changed host</template
             ><template v-else-if="g.letter">{{ modePhrase(g) }}</template></template
+          ><button
+            type="button"
+            class="cons-toggle"
+            :aria-expanded="!!row.expanded"
+            aria-label="Each event"
+            :title="row.expanded ? 'Hide each event' : 'Show each event'"
+            @click="toggleRun(row, $event)"
+          >
+            <component
+              :is="row.expanded ? ChevronDownIcon : ChevronRightIcon"
+              aria-hidden="true"
+            /></button
           ><!-- Compact: the time follows the text, as on every compact row. --><span
             v-if="compactMode && !row.continuationTime"
             class="time trailing"
@@ -416,7 +428,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
+import { ref, shallowRef, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import type { CSSProperties, ComponentPublicInstance, ComputedRef } from 'vue';
 import { useNetworksStore, type AwayState } from '../stores/networks.js';
 import { useBuffersStore, type BufferMember } from '../stores/buffers.js';
@@ -503,7 +515,14 @@ import { emitJumpIntent } from '../composables/useJumpIntent.js';
 import { setUnreadDividerShown } from '../lib/unreadDivider.js';
 import { orderByTime } from '../lib/messageOrder.js';
 import { logLine, rowsInSelection, trimBlankEdges, type LogContext } from '../lib/copyLog.js';
-import { CopyIcon, IdCardIcon, MessageSquareReplyIcon, SatelliteDishIcon } from '@lucide/vue';
+import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  CopyIcon,
+  IdCardIcon,
+  MessageSquareReplyIcon,
+  SatelliteDishIcon,
+} from '@lucide/vue';
 
 // Extended BufferMessage fields accessed in the template and script
 // (beyond the core BufferMessage definition which uses [key: string]: unknown).
@@ -599,6 +618,9 @@ interface RenderRow {
   time?: string;
   firstId?: number | string | null;
   lastId?: number | string | null;
+  // The rows the summary folded, and whether they are drawn under it (#1430).
+  rows?: readonly RenderRow[];
+  expanded?: boolean;
   // Display-collapsing tags (mutated by collapseDisplay)
   continuationAuthor?: boolean;
   continuationTime?: boolean;
@@ -668,6 +690,61 @@ const tsFormat = computed(() =>
 
 const scroller = ref<HTMLElement | null>(null);
 const stickToBottom = ref(true);
+
+// Consolidated runs the reader has opened (#1430): one set per run, of the
+// row keys of its events. A run is open while ANY of its rows is in one. A
+// run grows at either end (a live join, an older page) and loses rows too
+// (the buffer's cap evicts its oldest), so no one key names it for long:
+// isRunExpanded adds a run's new rows to its set as they are drawn, and
+// closing drops the whole set, rows no longer loaded included. Message ids,
+// so one list serves every buffer. Kept for the life of the list, not saved:
+// this is someone looking into one burst of joins. The array is replaced on
+// open and close, so a shallow ref.
+type RunKeys = Set<string | number>;
+const expandedRuns = shallowRef<RunKeys[]>([]);
+
+function isRunExpanded(run: readonly { key: string | number }[]): boolean {
+  const sets = expandedRuns.value;
+  if (sets.length === 0) return false;
+  const open = sets.find((keys) => run.some((r) => keys.has(r.key)));
+  if (!open) return false;
+  // In place, and not a change anyone is told about: the answer for this run
+  // is the same before and after.
+  for (const r of run) open.add(r.key);
+  return true;
+}
+
+function openRun(rows: readonly RenderRow[]) {
+  expandedRuns.value = [...expandedRuns.value, new Set(rows.map((r) => r.key))];
+}
+
+function closeRun(rows: readonly RenderRow[]) {
+  expandedRuns.value = expandedRuns.value.filter((keys) => !rows.some((r) => keys.has(r.key)));
+}
+
+async function toggleRun(row: RenderRow, event: MouseEvent) {
+  const rows = row.rows ?? [];
+  if (rows.length === 0) return;
+  const line = (event.currentTarget as HTMLElement | null)?.closest<HTMLElement>('.line');
+  const wasPinned = stickToBottom.value;
+  if (row.expanded) closeRun(rows);
+  else openRun(rows);
+  await nextTick();
+  const el = scroller.value;
+  if (!el) return;
+  // The rows open under the summary. A reader at the bottom who opens the
+  // last summary would see nothing happen, so follow the new rows down, but
+  // never so far that the summary they clicked leaves the top of the view.
+  if (wasPinned && line?.isConnected) {
+    const above = line.getBoundingClientRect().top - el.getBoundingClientRect().top;
+    el.scrollTop = Math.min(el.scrollHeight - el.clientHeight, el.scrollTop + above);
+  }
+  // No scroll event says the list got taller: a reader left short of the
+  // bottom would still count as pinned, and the next line would pull them
+  // off the rows they just opened.
+  stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+  setStuckToBottom(stickToBottom.value);
+}
 const { scrollToBottomToken, scrollToUnreadToken } = useScrollState();
 
 // Unread-divider visibility tracking. The divider is pinned for the whole
@@ -1764,6 +1841,7 @@ const renderRows = computed((): RenderRow[] => {
       enabled: true,
       maxNames: consolidateMaxNames.value,
       recentSpeakers: speakers,
+      isExpanded: isRunExpanded,
     }) as RenderRow[];
   }
   // Per-row display collapsing (nick + timestamp dedupe). Runs over the same
@@ -2060,6 +2138,17 @@ function openThreadAt(m: ChatMessage | undefined): void {
   const buf = buffer.value;
   if (!m?.msgid || !buf || buf.id == null) return;
   requestThreadNav({ kind: 'thread', bufferId: buf.id, rootMsgid: String(m.msgid) });
+}
+
+// A jump landing on an event a summary folded (#1430): open that run, so the
+// line has a row to scroll to. False when no folded run holds the id.
+function openFoldedRun(id: number | string): boolean {
+  const run = renderRows.value.find(
+    (r) => r.consolidation && !r.expanded && r.rows?.some((x) => String(x.m?.id) === String(id)),
+  );
+  if (!run?.rows) return false;
+  openRun(run.rows);
+  return true;
 }
 
 // A jump landing on a reply this list hides (reply threads on): open its
@@ -2919,6 +3008,11 @@ watch(
       if (!target) {
         // The slice may have landed since: a reply hidden by threads has no
         // row to find, and never will.
+        // Folded into a summary: open it and look again once it has drawn.
+        if (openFoldedRun(id)) {
+          requestAnimationFrame(tryScroll);
+          return;
+        }
         if (openHiddenReply(id)) return;
         if (attempts++ < SCROLL_RETRY_FRAMES) requestAnimationFrame(tryScroll);
         return;
@@ -3535,6 +3629,28 @@ watch(
   min-width: 0;
   text-align: center;
   overflow-wrap: anywhere;
+}
+
+/* The disclosure on a consolidated summary (#1430): opens the events it
+   folded underneath it. An icon in the line's own colour, so the summary
+   still reads as one muted line. */
+.cons-toggle {
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  /* A finger-sized target next to the summary's nicks, each a tap target of
+     its own. The negative margin gives the padding back, so the line is laid
+     out as if the button were the bare icon, 0.5ch after the text. */
+  padding: 0.4em;
+  margin: -0.4em;
+  margin-left: calc(0.5ch - 0.4em);
+  /* Left inline, so the icon's own vertical-align (.lucide) centres it on the
+     text's x-height as it does everywhere else. */
+}
+.cons-toggle:hover {
+  color: var(--accent);
 }
 
 /* Undo affordance on the /clear divider — text-only button styled inline

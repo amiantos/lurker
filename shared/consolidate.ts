@@ -137,12 +137,22 @@ export interface ConsolidationRow {
   firstId: number | string | null;
   lastId: number | string | null;
   key: string;
+  /** The rows the summary stands for, in order: what a reader expands it into. */
+  rows: readonly MessageStreamRow[];
+  /** Set when those rows follow the summary in the list (`isExpanded`). */
+  expanded?: true;
 }
 
 export interface ConsolidateOptions {
   enabled?: boolean;
   recentSpeakers?: Iterable<string> | null;
   maxNames?: number;
+  /**
+   * Whether the reader has opened this run (#1430). An open run keeps its
+   * summary and is followed by its own rows, so the summary reads as the
+   * heading of what it folded. Asked once per run of two or more.
+   */
+  isExpanded?: (rows: readonly MessageStreamRow[]) => boolean;
 }
 
 /** Mutable per-identity bookkeeping while walking a run. */
@@ -260,7 +270,7 @@ interface ModeState {
  * The last two are the mode-side of `joinedAndLeft` and `reconnected`. Keeping
  * them means a cancelled pair is never silently dropped OR misreported as its
  * end state alone — which matters here more than for presence, because the
- * summary row has no expand affordance to recover the detail from.
+ * summary has to stand on its own: only some clients can open it (#1430).
  */
 function classifyMode(first: '+' | '-', last: '+' | '-'): ConsolidationKind {
   if (first === '+') return last === '+' ? 'modeGranted' : 'modeBriefly';
@@ -281,9 +291,9 @@ function classifyMode(first: '+' | '-', last: '+' | '-'): ConsolidationKind {
  * Each pair is classified by its first and last change (see classifyMode), so a
  * nick appears exactly once per letter and a cancelled pair reads "was briefly
  * opped" — the mode-side of `joinedAndLeft`, and the same vocabulary the
- * presence half already uses for the same shape. Nothing is ever dropped: the
- * summary row has no expand affordance, so a nick dropped here would be
- * information deleted with no way to get it back.
+ * presence half already uses for the same shape. Nothing is ever dropped: a
+ * client that cannot open the summary (#1430) has no other way to get a
+ * dropped nick back.
  *
  * Renames are NOT followed. The identity walk migrates a nick across an 'R'
  * action; this keys on the parameter as written, so alice→bob opped as bob is
@@ -482,6 +492,7 @@ export function consolidateRows<R extends MessageStreamRow>(
       run = [];
       return;
     }
+    const expanded = !!options.isExpanded?.(run);
     out.push({
       consolidation: true,
       groups,
@@ -490,7 +501,10 @@ export function consolidateRows<R extends MessageStreamRow>(
       firstId: events[0].id ?? null,
       lastId: events[events.length - 1].id ?? null,
       key: `cons:${run[0].key}-${run[run.length - 1].key}`,
+      rows: run,
+      ...(expanded ? { expanded } : {}),
     });
+    if (expanded) out.push(...run);
     run = [];
   };
 
