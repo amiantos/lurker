@@ -613,10 +613,15 @@ watch(
   () => networks.activeKey,
   (key) => {
     const buf = key ? buffers.byKey(key) : null;
-    visit.value = stepVisit(
-      visit.value,
-      buf ? { networkId: buf.networkId ?? null, favorite: isFavoriteBuf(buf) } : null,
-    );
+    // A key with no buffer behind it yet still says where you are: the system
+    // buffer's has no network id in front, every other one does.
+    const keyNet = key ? Number(key.split('::')[0]) : NaN;
+    const place = buf
+      ? { networkId: buf.networkId ?? null, favorite: isFavoriteBuf(buf) }
+      : key
+        ? { networkId: Number.isInteger(keyNet) ? keyNet : null, favorite: false }
+        : null;
+    visit.value = stepVisit(visit.value, place);
   },
   { immediate: true },
 );

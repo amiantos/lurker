@@ -32,10 +32,15 @@ export interface VisitState {
 }
 
 // The visit after the active buffer changed. A favorite or the system buffer
-// is not "in" any network group, so nothing moves: stepping through favorites
-// on three networks must not flap the list below.
+// is not "in" any network group, so going to one is leaving: the visit ends,
+// and coming back is a new arrival. Favorites never open a network, so
+// stepping through favorites on three networks leaves the list below still.
+const NOWHERE: VisitState = { open: null, last: null };
 export function stepVisit(state: VisitState, active: ActivePlace | null): VisitState {
-  if (!active || active.networkId == null || active.favorite) return state;
+  if (!active) return state;
+  if (active.networkId == null || active.favorite) {
+    return state.open == null && state.last == null ? state : NOWHERE;
+  }
   if (active.networkId === state.last) return state;
   return { open: active.networkId, last: active.networkId };
 }

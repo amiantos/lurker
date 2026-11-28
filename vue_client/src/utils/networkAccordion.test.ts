@@ -13,15 +13,23 @@ describe('stepVisit', () => {
     expect(stepVisit({ open: 1, last: 1 }, at(2))).toEqual({ open: 2, last: 2 });
   });
 
-  it('changes nothing on a favorite, wherever it lives', () => {
-    const state = { open: 1, last: 1 };
-    expect(stepVisit(state, at(2, true))).toBe(state);
+  it('ends the visit on a favorite, wherever it lives', () => {
+    expect(stepVisit({ open: 1, last: 1 }, at(2, true))).toEqual(none);
+    expect(stepVisit({ open: 1, last: 1 }, at(1, true))).toEqual(none);
   });
 
-  it('changes nothing on the system buffer or with no buffer', () => {
+  it('ends the visit on the system buffer', () => {
+    expect(stepVisit({ open: 1, last: 1 }, at(null))).toEqual(none);
+  });
+
+  it('changes nothing with no buffer at all', () => {
     const state = { open: 1, last: 1 };
-    expect(stepVisit(state, at(null))).toBe(state);
     expect(stepVisit(state, null)).toBe(state);
+  });
+
+  it('opens the network again when you come back from a favorite', () => {
+    const away = stepVisit({ open: 1, last: 1 }, at(2, true));
+    expect(stepVisit(away, at(1))).toEqual({ open: 1, last: 1 });
   });
 
   it('opens nothing when you start on a favorite', () => {

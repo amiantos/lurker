@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { reactive } from 'vue';
-import type { LucideIcon } from '@lucide/vue';
+import { SquareCheckIcon, SquareIcon, type LucideIcon } from '@lucide/vue';
 
 // Single global context menu, controlled imperatively by any consumer.
 // State is module-level so every useContextMenu() caller shares the same
@@ -24,6 +24,17 @@ export interface ContextMenuItem {
   // A non-interactive small-caps group label (e.g. "Notifications" above a radio
   // group). Rendered as a muted heading row; other fields ignored.
   heading?: string;
+}
+
+// A checkbox row: an on/off switch that keeps its label and shows its state
+// in the icon slot. `onClick` gets the state to switch to, fixed when the menu
+// was built, so a click does what the box showed (#1136).
+export function checkboxItem(
+  label: string,
+  checked: boolean,
+  onClick: (next: boolean) => void,
+): ContextMenuItem {
+  return { label, icon: checked ? SquareCheckIcon : SquareIcon, onClick: () => onClick(!checked) };
 }
 
 export interface ContextMenuState {
