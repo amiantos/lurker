@@ -103,7 +103,9 @@
           <template v-if="alsoLines.length">
             <dt>Also</dt>
             <dd class="also">
-              <span v-for="(line, i) in alsoLines" :key="i">{{ line }}</span>
+              <span v-for="(segments, i) in alsoLines" :key="i"
+                ><RenderSegments :segments="segments"
+              /></span>
             </dd>
           </template>
           <template v-if="channelsList.length">
@@ -356,23 +358,24 @@ const chips = computed<Chip[]>(() => {
 });
 
 // What the server says of them that has no row of its own, in its own words:
-// user modes, certificate fingerprints, the "special" lines, country, ASN, and
-// any line an ircd adds that irc-framework has no field for (`other`). These
-// used to be read off the raw lines in the server buffer, which no longer
-// carries the user's own WHOIS.
-const alsoLines = computed<string[]>(() => {
+// the operator line (the chip says only that they are one), user modes,
+// certificate fingerprints, the "special" lines, country, ASN, and any line an
+// ircd adds that irc-framework has no field for (`other`). The profile's WHOIS
+// is kept out of the server buffer, so this is the only place they show.
+const alsoLines = computed(() => {
   const w = whois.value;
   if (!w) return [];
   const list = (v: unknown): string[] =>
     (Array.isArray(v) ? v : v ? [v] : []).map((x) => String(x).trim()).filter(Boolean);
   return [
+    ...list(w.operator),
     ...list(w.modes),
     ...list(w.certfps ?? w.certfp),
     ...list(w.special),
     ...list(w.country),
     ...list(w.asn),
     ...list(w.other),
-  ];
+  ].map((line) => formattingSegments(line));
 });
 
 const idleLabel = computed(() => {
@@ -545,7 +548,12 @@ function onChannelClick(channel: string) {
 }
 
 function onRefresh() {
-  socketSend({ type: 'raw', networkId: props.networkId, line: `WHOIS ${props.nick}` });
+  socketSend({
+    type: 'raw',
+    networkId: props.networkId,
+    line: `WHOIS ${props.nick}`,
+    profile: true,
+  });
 }
 
 function copyHostmask() {

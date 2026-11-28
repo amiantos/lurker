@@ -3866,6 +3866,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           // be said there (#816).
           conn.raw(msg.line, 'user', {
             issuingTarget: typeof msg.issuingTarget === 'string' ? msg.issuingTarget : undefined,
+            // The client shows this WHOIS's reply itself (docs §7.5).
+            profile: msg.profile === true,
           });
         }
         break;

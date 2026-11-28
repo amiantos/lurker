@@ -258,7 +258,7 @@ describe('replies go only to whoever asked', () => {
     await until(() => live.events.some((e) => e.type === 'whois_result'), 5000, 'whois_result');
   });
 
-  it("keeps the 301 for a DM to someone away out of the server buffer, and a WHOIS's", async () => {
+  it("keeps the 301 for a DM to someone away out of the server buffer, not a WHOIS's", async () => {
     const live = await seedLive();
     const nick = `dave${seq}`;
     const dave = await rawClient(ircd.port, nick);
@@ -290,12 +290,18 @@ describe('replies go only to whoever asked', () => {
     live.conn.raw(`WHOIS ${nick}`);
     await until(() => live.events.some((e) => e.type === 'whois_result'), 5000, 'whois_result');
     await sentinel(live, [c]);
-    // The user's WHOIS is the profile's: the reason rides the whois_result.
-    expect(rows('at the dentist')).toEqual([]);
-    expect(live.events.findLast((e) => e.type === 'whois_result')?.whois).toMatchObject({
-      away: 'at the dentist',
-    });
-    expect(rows(nick)).toEqual([]);
+    expect(rows('at the dentist')).toHaveLength(1);
+
+    // One the profile asked for is the profile's: no more rows, and the reason
+    // rides the whois_result.
+    const before = rows(nick).length;
+    const results = () => live.events.filter((e) => e.type === 'whois_result');
+    const had = results().length;
+    live.conn.raw(`WHOIS ${nick}`, 'user', { profile: true });
+    await until(() => results().length > had, 5000, 'the profile whois_result');
+    await sentinel(live, [c]);
+    expect(rows(nick)).toHaveLength(before);
+    expect(results().at(-1)?.whois).toMatchObject({ away: 'at the dentist' });
   });
 
   it('keeps the 301 from someone with no DM, which has nowhere else to show', async () => {

@@ -136,8 +136,8 @@ const NOT_WHOIS = new Set([
   '368',
   '369',
 ]);
-// WHOIS lines outside 3xx: certfp, TLS, metadata.
-const WHOIS_OTHER_REPLIES = new Set(['276', '671', '760']);
+// WHOIS lines outside 3xx: certfp, ASN, TLS, metadata.
+const WHOIS_OTHER_REPLIES = new Set(['276', '569', '671', '760']);
 
 function isWhoisReply(command: string): boolean {
   return (/^3\d\d$/.test(command) && !NOT_WHOIS.has(command)) || WHOIS_OTHER_REPLIES.has(command);
@@ -357,8 +357,8 @@ export class ReplyRouter {
   endedEmpty = false;
   /**
    * Whether the line just given to noteServerLine is part of a WHOIS reply, its
-   * end included. Read beside the owner, by a caller that keeps the user's own
-   * WHOIS out of the server buffer.
+   * end included. Read beside the owner, by a caller that keeps a WHOIS the
+   * profile asked for out of the server buffer.
    */
   lineInWhois = false;
   // Batches whose query timed out before they closed, by reference, with the

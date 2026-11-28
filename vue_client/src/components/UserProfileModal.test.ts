@@ -187,6 +187,7 @@ describe('UserProfileModal — the rest of the whois', () => {
       nick: 'bob',
       ident: 'u',
       hostname: 'h.test',
+      operator: 'is a Network Administrator',
       modes: 'is using modes +iwx',
       certfp: 'has client certificate fingerprint ab12',
       certfps: [
@@ -199,6 +200,7 @@ describe('UserProfileModal — the rest of the whois', () => {
       other: ['is logged in from 2 sessions'],
     });
     expect(also(open('bob'))).toEqual([
+      'is a Network Administrator',
       'is using modes +iwx',
       'has client certificate fingerprint ab12',
       'has client certificate fingerprint cd34',
