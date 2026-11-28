@@ -2121,6 +2121,19 @@ function openThreadAt(m: ChatMessage | undefined): void {
   requestThreadNav({ kind: 'thread', bufferId: buf.id, rootMsgid: String(m.msgid) });
 }
 
+// A jump landing on an event a summary folded (#1430): open that run, so the
+// line has a row to scroll to. False when no folded run holds the id.
+function openFoldedRun(id: number | string): boolean {
+  const run = renderRows.value.find(
+    (r) => r.consolidation && !r.expanded && r.rows?.some((x) => String(x.m?.id) === String(id)),
+  );
+  if (!run?.rows) return false;
+  const next = new Set(expandedRuns.value);
+  for (const r of run.rows) next.add(r.key);
+  expandedRuns.value = next;
+  return true;
+}
+
 // A jump landing on a reply this list hides (reply threads on): open its
 // thread on that reply instead of scrolling to a row that isn't drawn. Asked
 // only once the row has failed to appear, so a reply shown inline (a
@@ -2978,6 +2991,11 @@ watch(
       if (!target) {
         // The slice may have landed since: a reply hidden by threads has no
         // row to find, and never will.
+        // Folded into a summary: open it and look again once it has drawn.
+        if (openFoldedRun(id)) {
+          requestAnimationFrame(tryScroll);
+          return;
+        }
         if (openHiddenReply(id)) return;
         if (attempts++ < SCROLL_RETRY_FRAMES) requestAnimationFrame(tryScroll);
         return;
