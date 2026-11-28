@@ -3596,8 +3596,8 @@ watch(
   cursor: pointer;
   padding: 0;
   margin-left: 0.5ch;
-  vertical-align: middle;
-  display: inline-flex;
+  /* Left inline, so the icon's own vertical-align (.lucide) centres it on the
+     text's x-height as it does everywhere else. */
 }
 .cons-toggle:hover {
   color: var(--accent);
