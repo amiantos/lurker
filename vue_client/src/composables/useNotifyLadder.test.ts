@@ -46,14 +46,14 @@ describe('useNotifyLadder channel rungs', () => {
   });
 });
 
-// "Suppress Highlights" (#1414): a box beside the ladder that adds NOHIGHLIGHT
-// to the same rule the rungs write.
+// "Suppress Highlights" (#1414): a box beside the ladder, stored as a
+// NOHIGHLIGHT rule of its own so the rung's rule is never rewritten.
 describe('useNotifyLadder Suppress Highlights', () => {
   let added: Array<{ channels: string[] | null; levels: string[] }>;
   let removed: number[];
 
-  const rule = (levels: string[], channels: string[] | null): IgnoreEntry => ({
-    id: 9,
+  const rule = (levels: string[], channels: string[] | null, id = 9): IgnoreEntry => ({
+    id,
     mask: null,
     channels,
     pattern: null,
@@ -63,11 +63,8 @@ describe('useNotifyLadder Suppress Highlights', () => {
     expiresAt: null,
     createdAt: '',
   });
-  const seed = (levels: string[] | null, channels: string[] | null = ['#chan']) =>
-    useIgnoresStore().applySnapshot(
-      [{ networkId: 1, ignoredMasks: levels ? [rule(levels, channels)] : [] }],
-      [],
-    );
+  const seed = (rules: IgnoreEntry[], global: IgnoreEntry[] = []) =>
+    useIgnoresStore().applySnapshot([{ networkId: 1, ignoredMasks: rules }], global);
   const tap = (
     items: ReturnType<ReturnType<typeof useNotifyLadder>['channelItems']>,
     label: string,
@@ -88,8 +85,8 @@ describe('useNotifyLadder Suppress Highlights', () => {
     }) as never);
   });
 
-  it('is a rule of its own on a rung that has none', () => {
-    seed(null);
+  it('adds a rule of its own and touches nothing else', () => {
+    seed([rule(['NOUNREAD', 'NONOTIFY'], ['#chan'])]);
     const items = useNotifyLadder().channelItems(1, '#chan');
     expect(box(items)!.icon).toBe(SquareIcon);
     tap(items, 'Suppress Highlights');
@@ -97,60 +94,58 @@ describe('useNotifyLadder Suppress Highlights', () => {
     expect(removed).toEqual([]);
   });
 
-  it('joins the rule of a muted channel, and shows checked from then on', () => {
-    seed(['NOUNREAD', 'NONOTIFY']);
-    tap(useNotifyLadder().channelItems(1, '#chan'), 'Suppress Highlights');
-    expect(removed).toEqual([9]);
-    expect(added).toHaveLength(1);
-    expect(new Set(added[0].levels)).toEqual(new Set(['NOUNREAD', 'NONOTIFY', 'NOHIGHLIGHT']));
-
-    seed(added[0].levels);
+  it('shows checked, beside whatever level is set', () => {
+    seed([rule(['NOUNREAD', 'NONOTIFY'], ['#chan']), rule(['NOHIGHLIGHT'], ['#chan'], 10)]);
     const items = useNotifyLadder().channelItems(1, '#chan');
     expect(box(items)!.icon).toBe(SquareCheckIcon);
-    // Still read as Muted with the extra level on it.
     expect(items.find((i) => i.label === 'Muted')!.icon).not.toBe(
       items.find((i) => i.label === 'Nothing')!.icon,
     );
   });
 
-  it('clearing it on a plain rung removes the rule', () => {
-    seed(['NOHIGHLIGHT']);
+  it('clearing it removes only its own rule', () => {
+    seed([rule(['NOUNREAD', 'NONOTIFY'], ['#chan']), rule(['NOHIGHLIGHT'], ['#chan'], 10)]);
     tap(useNotifyLadder().channelItems(1, '#chan'), 'Suppress Highlights');
-    expect(removed).toEqual([9]);
+    expect(removed).toEqual([10]);
     expect(added).toEqual([]);
   });
 
-  it('survives a change of rung', () => {
-    seed(['NOHIGHLIGHT']);
-    tap(useNotifyLadder().channelItems(1, '#chan'), 'Nothing');
-    expect(new Set(added[0].levels)).toEqual(new Set(['NONOTIFY', 'NOHIGHLIGHT']));
-
-    added = [];
-    seed(['NOUNREAD', 'NONOTIFY', 'NOHIGHLIGHT']);
-    tap(useNotifyLadder().channelItems(1, '#chan'), 'Highlights only');
-    expect(added).toEqual([{ channels: ['#chan'], levels: ['NOHIGHLIGHT'] }]);
+  it('is left alone by a change of level', () => {
+    seed([rule(['NOHIGHLIGHT'], ['#chan'], 10)]);
+    tap(useNotifyLadder().channelItems(1, '#chan'), 'Muted');
+    expect(removed).toEqual([]);
+    expect(added).toHaveLength(1);
+    expect(added[0].levels).not.toContain('NOHIGHLIGHT');
   });
 
-  it('keeps All messages when ticked there', () => {
-    seed(null);
-    const notify = useChannelNotifyStore();
-    notify.applyChange(1, '#chan', { notifyAlways: true });
-    const set = vi.spyOn(notify, 'setNotifyAlways');
-    tap(useNotifyLadder().channelItems(1, '#chan'), 'Suppress Highlights');
-    expect(added).toEqual([{ channels: ['#chan'], levels: ['NOHIGHLIGHT'] }]);
-    expect(set).not.toHaveBeenCalled();
-  });
-
-  it('works network-wide', () => {
-    seed(['NONOTIFY'], null);
-    const items = useNotifyLadder().networkItems(1);
+  it('does not read a hand-typed NOUNREAD rule as its own, or disturb it', () => {
+    seed([rule(['NOUNREAD'], ['#chan'])]);
+    const items = useNotifyLadder().channelItems(1, '#chan');
+    expect(box(items)!.icon).toBe(SquareIcon);
     tap(items, 'Suppress Highlights');
-    expect(added[0].channels).toBeNull();
-    expect(new Set(added[0].levels)).toEqual(new Set(['NONOTIFY', 'NOHIGHLIGHT']));
+    expect(removed).toEqual([]);
+  });
+
+  it('acts on the state at the tap, not as the menu opened', () => {
+    seed([]);
+    const items = useNotifyLadder().channelItems(1, '#chan');
+    // Ticked on another device while this menu sat open: nothing to add.
+    seed([rule(['NOHIGHLIGHT'], ['#chan'], 10)]);
+    tap(items, 'Suppress Highlights');
+    expect(added).toEqual([]);
+    expect(removed).toEqual([]);
+  });
+
+  it("works network-wide, apart from a channel's own", () => {
+    seed([rule(['NOHIGHLIGHT'], ['#chan'], 10)]);
+    const items = useNotifyLadder().networkItems(1);
+    expect(box(items)!.icon).toBe(SquareIcon);
+    tap(items, 'Suppress Highlights');
+    expect(added).toEqual([{ channels: null, levels: ['NOHIGHLIGHT'] }]);
   });
 
   it('is not offered on a DM', () => {
-    seed(null);
+    seed([]);
     expect(box(useNotifyLadder().dmItems(1, 'alice'))).toBeUndefined();
   });
 });

@@ -14,13 +14,19 @@ import {
 } from '../utils/ignoreMatch.js';
 import { isChannelTarget } from '../../../shared/channels.js';
 
-// The modifier levels the notification menus write (issue #359; NOHIGHLIGHT is
-// their "Suppress Highlights" box, #1414). A per-buffer or per-network rule
-// carrying only these (no hide levels, no mask/pattern/except) is the canonical
-// one the menus find, read, and toggle.
-const MUTE_LEVELS = new Set(['NOUNREAD', 'NONOTIFY', 'NOHIGHLIGHT']);
+// The two "mute" modifier levels (issue #359). A per-buffer or per-network mute
+// rung is a canonical rule carrying only these (no hide levels, no mask/pattern/
+// except), so the notification menus can find, read, and toggle it.
+const MUTE_LEVELS = new Set(['NOUNREAD', 'NONOTIFY']);
 function isMuteOnlyLevels(levels: string[]): boolean {
   return levels.length > 0 && levels.every((l) => MUTE_LEVELS.has(l));
+}
+// "Suppress Highlights" (#1414) is a canonical rule of its own beside the mute
+// rule: the same shape, carrying NOHIGHLIGHT and nothing else. Kept apart so
+// ticking the box never rewrites a mute rule (its levels, its expiry), and so
+// a client that knows only the mute rule still reads the level correctly.
+function isSuppressOnlyLevels(levels: string[]): boolean {
+  return levels.length === 1 && levels[0] === 'NOHIGHLIGHT';
 }
 
 // Find the canonical mute rule (unmasked, unpatterned, non-except, mute-only
@@ -32,9 +38,10 @@ function findMuteRule(
   globalList: IgnoreEntry[],
   networkId: number,
   scopeMatches: (e: IgnoreEntry) => boolean,
+  levelsMatch: (levels: string[]) => boolean = isMuteOnlyLevels,
 ): IgnoreEntryWithNetwork | null {
   const ok = (e: IgnoreEntry) =>
-    !e.mask && !e.pattern && !e.isExcept && scopeMatches(e) && isMuteOnlyLevels(e.levels);
+    !e.mask && !e.pattern && !e.isExcept && scopeMatches(e) && levelsMatch(e.levels);
   const net = netList.find(ok);
   if (net) return { ...net, networkId };
   const g = globalList.find(ok);
@@ -170,6 +177,34 @@ export const useIgnoresStore = defineStore('ignores', {
           state.global,
           nid,
           (e) => !e.channels || e.channels.length === 0,
+        );
+      },
+
+    // The Suppress Highlights rule for a channel, and for a whole network:
+    // found like the mute rules above, global bucket included.
+    bufferSuppressRule:
+      (state) =>
+      (networkId: number | string, target: string): IgnoreEntryWithNetwork | null => {
+        const nid = Number(networkId);
+        const t = target.toLowerCase();
+        return findMuteRule(
+          state.byNetwork[nid] || EMPTY,
+          state.global,
+          nid,
+          (e) => e.channels?.length === 1 && e.channels[0].toLowerCase() === t,
+          isSuppressOnlyLevels,
+        );
+      },
+    networkSuppressRule:
+      (state) =>
+      (networkId: number | string): IgnoreEntryWithNetwork | null => {
+        const nid = Number(networkId);
+        return findMuteRule(
+          state.byNetwork[nid] || EMPTY,
+          state.global,
+          nid,
+          (e) => !e.channels || e.channels.length === 0,
+          isSuppressOnlyLevels,
         );
       },
 

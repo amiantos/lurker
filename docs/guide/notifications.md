@@ -19,8 +19,8 @@ How Lurker keeps you informed across all your devices.
   Underneath they are ignore rules, so they appear in `/ignore`'s list and
   follow you to every device.
 - Channels and networks also have **Suppress Highlights** in the same menu:
-  nothing said there highlights, whatever the level. It applies to lines that
-  arrive after you tick it; highlights already there stay.
+  nothing said there highlights, whatever the level. A highlight count already
+  on the channel stays until you read it.
 
 ## Web push
 
