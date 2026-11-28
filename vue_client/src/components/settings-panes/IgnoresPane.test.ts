@@ -19,17 +19,13 @@ vi.mock('../../composables/useSocket.js', () => ({
 
 import { socketSend } from '../../composables/useSocket.js';
 import { useIgnoresStore, type IgnoreEntry } from '../../stores/ignores.js';
+import { useNetworksStore } from '../../stores/networks.js';
 import IgnoresPane from './IgnoresPane.vue';
 
 function chip(wrapper: VueWrapper, label: string) {
   const found = wrapper.findAll('.chip').find((c) => c.text() === label);
   if (!found) throw new Error(`no chip labelled ${label}`);
   return found;
-}
-
-// The NOHIGHLIGHT modifier is the only checkbox in the "Event types" field.
-function noHighlightBox(wrapper: VueWrapper) {
-  return wrapper.find('.field .ck input[type="checkbox"]');
 }
 
 // The form lives in a modal: its footer button is the form's submit.
@@ -94,7 +90,7 @@ describe('IgnoresPane — the ALL chip and the NOHIGHLIGHT-only rule (#775)', ()
   // anything, and /ignore bob NOHIGHLIGHT makes one happily.
   it('builds a NOHIGHLIGHT-only rule when ALL is switched off', async () => {
     await setMask(wrapper, 'bob');
-    await noHighlightBox(wrapper).setValue(true);
+    await chip(wrapper, 'NOHIGHLIGHT').trigger('click');
     await chip(wrapper, 'ALL').trigger('click');
     await submit(wrapper);
     expect(sentRule()?.levels).toEqual(['NOHIGHLIGHT']);
@@ -108,7 +104,7 @@ describe('IgnoresPane — the ALL chip and the NOHIGHLIGHT-only rule (#775)', ()
     await chip(wrapper, 'ALL').trigger('click');
     await submit(wrapper);
     expect(sentRule()).toBeNull();
-    expect(wrapper.find('.form-error').text()).toContain('Suppress highlights only');
+    expect(wrapper.find('.form-error').text()).toContain('silencing option');
   });
 
   it('keeps a granular selection selectable and clearable', async () => {
@@ -139,17 +135,17 @@ describe('IgnoresPane — the ALL chip and the NOHIGHLIGHT-only rule (#775)', ()
   // network while the list shows it as nothing but `*  NOHIGHLIGHT`. The pane already refuses
   // the ALL-shaped version of the same mistake.
   it('refuses an unscoped highlight-suppression rule', async () => {
-    await noHighlightBox(wrapper).setValue(true);
+    await chip(wrapper, 'NOHIGHLIGHT').trigger('click');
     await chip(wrapper, 'ALL').trigger('click');
     await submit(wrapper);
     expect(sentRule()).toBeNull();
-    expect(wrapper.find('.form-error').text()).toContain('silence every highlight');
+    expect(wrapper.find('.form-error').text()).toContain('silence every network');
   });
 
   it('combines hide levels with the modifier — the pairing the fix must not lose', async () => {
     await setMask(wrapper, 'bob');
     await chip(wrapper, 'JOINS').trigger('click');
-    await noHighlightBox(wrapper).setValue(true);
+    await chip(wrapper, 'NOHIGHLIGHT').trigger('click');
     await submit(wrapper);
     expect(sentRule()?.levels).toEqual(['JOINS', 'NOHIGHLIGHT']);
   });
@@ -185,5 +181,123 @@ describe('IgnoresPane — the ALL chip and the NOHIGHLIGHT-only rule (#775)', ()
     expect(chip(wrapper, 'ALL').attributes('aria-pressed')).toBe('true');
     await submit(wrapper);
     expect(sentRule()?.levels).toEqual(['ALL']);
+  });
+
+  // The modifiers are chips of their own, apart from the event types: ALL does
+  // not clear them, and they are not cleared by it on the way back in.
+  it('keeps a modifier when ALL is switched on after it', async () => {
+    await setMask(wrapper, 'bob');
+    await chip(wrapper, 'ALL').trigger('click');
+    await chip(wrapper, 'NONOTIFY').trigger('click');
+    await chip(wrapper, 'ALL').trigger('click');
+    expect(chip(wrapper, 'NONOTIFY').attributes('aria-pressed')).toBe('true');
+    await submit(wrapper);
+    expect(sentRule()?.levels).toEqual(['ALL', 'NONOTIFY']);
+  });
+
+  it('round-trips an ALL rule that carries modifiers', async () => {
+    seedEntry({ levels: ['ALL', 'NOHIGHLIGHT', 'NONOTIFY'] });
+    await wrapper.vm.$nextTick();
+    await wrapper.find('.device .btn-bar button').trigger('click');
+    expect(chip(wrapper, 'ALL').attributes('aria-pressed')).toBe('true');
+    expect(chip(wrapper, 'NONOTIFY').attributes('aria-pressed')).toBe('true');
+    await submit(wrapper);
+    expect(sentRule()?.levels).toEqual(['ALL', 'NOHIGHLIGHT', 'NONOTIFY']);
+  });
+
+  it('sends the modifiers in canonical order, whatever order they were clicked in', async () => {
+    await setMask(wrapper, 'bob');
+    await chip(wrapper, 'ALL').trigger('click');
+    await chip(wrapper, 'NONOTIFY').trigger('click');
+    await chip(wrapper, 'NOHIGHLIGHT').trigger('click');
+    await submit(wrapper);
+    expect(sentRule()?.levels).toEqual(['NOHIGHLIGHT', 'NONOTIFY']);
+  });
+});
+
+// The rules the notification menus write have no mask, channel-or-network
+// scope, and only silencing options. The editor has to open and save them,
+// and refuse the same shape where it would cover every network.
+describe('IgnoresPane — silencing-only rules and scope', () => {
+  let wrapper: VueWrapper;
+
+  const sentAdd = () =>
+    vi
+      .mocked(socketSend)
+      .mock.calls.map(([payload]) => payload)
+      .findLast((p) => p.type === 'add-ignore') ?? null;
+
+  const networkRule = (levels: string[]): IgnoreEntry =>
+    ({
+      id: 8,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      mask: null,
+      channels: null,
+      pattern: null,
+      patternKind: 'substr',
+      levels,
+      isExcept: false,
+      expiresAt: null,
+    }) as IgnoreEntry;
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.mocked(socketSend).mockClear();
+    useNetworksStore().networks = [{ id: 1, name: 'libera' }] as never;
+    wrapper = mount(IgnoresPane, { global: { stubs: { Teleport: true } } });
+  });
+
+  const openAdd = () => wrapper.find('.add-row button').trigger('click');
+  const openFirstRule = async () => {
+    await wrapper.vm.$nextTick();
+    await wrapper.find('.device .btn-bar button').trigger('click');
+  };
+
+  it('refuses a mute of every network', async () => {
+    await openAdd();
+    await chip(wrapper, 'ALL').trigger('click');
+    await chip(wrapper, 'NOUNREAD').trigger('click');
+    await chip(wrapper, 'NONOTIFY').trigger('click');
+    await submit(wrapper);
+    expect(sentAdd()).toBeNull();
+    expect(wrapper.find('.form-error').text()).toContain('silence every network');
+  });
+
+  it("opens and saves one network's Suppress Highlights rule", async () => {
+    useIgnoresStore().byNetwork = { 1: [networkRule(['NOHIGHLIGHT'])] };
+    await openFirstRule();
+    await submit(wrapper);
+    expect(sentAdd()).toMatchObject({
+      networkId: 1,
+      rule: { mask: null, levels: ['NOHIGHLIGHT'] },
+    });
+  });
+
+  it("opens and saves one network's mute", async () => {
+    useIgnoresStore().byNetwork = { 1: [networkRule(['NOUNREAD', 'NONOTIFY'])] };
+    await openFirstRule();
+    await submit(wrapper);
+    expect(sentAdd()).toMatchObject({ networkId: 1, rule: { levels: ['NOUNREAD', 'NONOTIFY'] } });
+  });
+
+  it('goes back to the global scope for the next add', async () => {
+    useIgnoresStore().byNetwork = { 1: [networkRule(['NOUNREAD', 'NONOTIFY'])] };
+    await openFirstRule();
+    await submit(wrapper);
+
+    await openAdd();
+    await setMask(wrapper, 'bob');
+    await submit(wrapper);
+    expect(sentAdd()).toMatchObject({ networkId: null, rule: { mask: 'bob', levels: ['ALL'] } });
+  });
+
+  it('refuses NOUNREAD on a rule about one sender, where it would do nothing', async () => {
+    await openAdd();
+    await setMask(wrapper, 'bob');
+    await chip(wrapper, 'ALL').trigger('click');
+    await chip(wrapper, 'NOUNREAD').trigger('click');
+    await submit(wrapper);
+    expect(sentAdd()).toBeNull();
+    expect(wrapper.find('.form-error').text()).toContain('NOUNREAD mutes a whole');
   });
 });
