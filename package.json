@@ -1,6 +1,6 @@
 {
   "name": "lurker",
-  "version": "2.7.2",
+  "version": "2.8.0",
   "description": "Self-hosted IRC client with persistent server-side connection and a Vue web UI",
   "main": "server/server.ts",
   "type": "module",
