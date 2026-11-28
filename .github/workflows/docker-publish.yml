@@ -31,7 +31,11 @@ env:
   # the engine's behaviour did not, so self-hosters keep the engine they are running
   # instead of having `docker compose pull` recreate it — and drop their IRC
   # connections — for nothing. Entries are one-shot: drop them once released.
-  ENGINE_TAG_PINNED_RELEASES: ''
+  #
+  # v2.8.0: the engine closure's only change since v2.7.2 is socks 2.8.10 →
+  # 2.8.11, which differs in its version number and one source map: no code.
+  # None of the engine's own files changed.
+  ENGINE_TAG_PINNED_RELEASES: 'v2.8.0'
 
 jobs:
   build-and-push:
