@@ -61,7 +61,7 @@
         </button>
         <!-- Channels and DMs drop the name here — the compact status bar
              carries net/#chan on mobile, so a header copy is just redundant
-             clutter (#222). The server buffer (input placeholder is "try /commands")
+             clutter (#222). The server buffer (input placeholder is a hint or the nick)
              and the system console (no input row at all) have no
              other persistent label, so they keep an explicit title. Otherwise
              the bar holds only buffer-scoped actions: search & highlights open
