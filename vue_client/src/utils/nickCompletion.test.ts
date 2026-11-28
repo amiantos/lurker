@@ -73,6 +73,27 @@ describe('buildNickCandidates — own nick', () => {
     expect(buildNickCandidates(dm, 'me', '').map((c) => c.nick)).toEqual(['carol', 'me']);
   });
 
+  // Before the names arrive, and after a part or a kick, the list is empty.
+  it('is not offered in a channel whose member list lacks it', () => {
+    expect(buildNickCandidates({ target: '#c', members: [] }, 'me', 'm')).toEqual([]);
+    const left = { target: '&c', members: [{ nick: 'mallory' }] };
+    expect(buildNickCandidates(left, 'me', 'm')).toEqual([{ nick: 'mallory', recent: false }]);
+  });
+
+  it('is not offered in a server buffer', () => {
+    expect(buildNickCandidates({ target: ':server:1' }, 'me', '')).toEqual([]);
+  });
+
+  // Under rfc1459 `me[` and `me{` are one nick: once, and last.
+  it('is told apart by the network fold', () => {
+    const fold = (name: string) => name.toLowerCase().replaceAll('[', '{');
+    const room = { target: '#c', members: [{ nick: 'me{' }, { nick: 'mona' }], speakers: {} };
+    expect(buildNickCandidates(room, 'me[', 'm', null, null, fold).map((c) => c.nick)).toEqual([
+      'mona',
+      'me{',
+    ]);
+  });
+
   it('is not subject to the ignore list', () => {
     expect(buildNickCandidates(buf, 'me', 'me', () => true)).toEqual([
       { nick: 'Me', recent: false },

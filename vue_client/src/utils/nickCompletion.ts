@@ -73,13 +73,17 @@ export function buildNickCandidates(
   isIgnored?: ((nick: string, userhost: string | null) => boolean) | null,
   // The plain display name for a nick, where the network carries one (#607).
   displayNameOf?: ((nick: string) => string | null) | null,
+  // The network's case fold (utils/foldName), for telling which name is yours:
+  // under rfc1459 `foo[m]` and `foo{m}` are one nick.
+  fold?: ((name: string) => string) | null,
 ): NickCandidate[] {
   if (!buf) return [];
   const lower = (prefix || '').toLowerCase();
   const seen = new Set<string>();
-  // Held out of both passes below and added at the end.
-  const selfLc = selfNick ? selfNick.toLowerCase() : null;
-  if (selfLc) seen.add(selfLc);
+  // Your own nick is held out of both passes below and added at the end.
+  const foldName = fold ?? ((name: string) => name.toLowerCase());
+  const selfKey = selfNick ? foldName(selfNick) : null;
+  const isSelf = (nick: string) => selfKey !== null && foldName(nick) === selfKey;
   const nameOf = (nick: string) => displayNameOf?.(nick) ?? null;
 
   const memberNames = (buf.members || [])
@@ -104,7 +108,7 @@ export function buildNickCandidates(
   const speakers = Object.values(buf.speakers || {}).toSorted((a, b) => b.lastTime - a.lastTime);
   for (const s of speakers) {
     const lc = s.nick.toLowerCase();
-    if (seen.has(lc)) continue;
+    if (seen.has(lc) || isSelf(s.nick)) continue;
     const name = nameOf(s.nick);
     if (!matches(lower, s.nick, name)) continue;
     if (filterSpeakersByMembership && !memberLcSet.has(lc)) continue;
@@ -116,7 +120,7 @@ export function buildNickCandidates(
   const sortedMembers = memberNames.toSorted((a, b) => a.localeCompare(b));
   for (const n of sortedMembers) {
     const lc = n.toLowerCase();
-    if (seen.has(lc)) continue;
+    if (seen.has(lc) || isSelf(n)) continue;
     const name = nameOf(n);
     if (!matches(lower, n, name)) continue;
     if (isIgnored && isIgnored(n, memberUserhost(n))) continue;
@@ -124,9 +128,13 @@ export function buildNickCandidates(
     out.push({ nick: n, recent: false, ...(name ? { displayName: name } : {}) });
   }
 
-  if (selfNick && selfLc) {
-    // The member list's spelling where it has one; a DM has no list.
-    const self = memberNames.find((n) => n.toLowerCase() === selfLc) ?? selfNick;
+  // In a channel, only as a member: before the names arrive, or after a part
+  // or a kick, the list is empty and you are not there to be named. A DM has
+  // no list, so there you are always offered; a server buffer never offers you.
+  const self =
+    memberNames.find(isSelf) ??
+    (selfNick && !filterSpeakersByMembership && !buf.target?.startsWith(':') ? selfNick : null);
+  if (self) {
     const name = nameOf(self);
     if (matches(lower, self, name)) {
       out.push({ nick: self, recent: false, ...(name ? { displayName: name } : {}) });

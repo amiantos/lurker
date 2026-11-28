@@ -40,6 +40,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { buildNickCandidates } from '../utils/nickCompletion.js';
+import { folderFor } from '../utils/foldName.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { useDisplayNames } from '../composables/useDisplayNames.js';
@@ -100,7 +101,14 @@ const rows = computed<NickRow[]>(() => {
   // Display names match too (#607): `@bra` finds the user shown as "Brad
   // Root"; the nick is what gets inserted.
   const nameOf = (nick: string) => displayNames.plainDisplayNameFor(networkId, nick);
-  return buildNickCandidates(props.buffer, props.selfNick, props.query, isIgnored, nameOf)
+  return buildNickCandidates(
+    props.buffer,
+    props.selfNick,
+    props.query,
+    isIgnored,
+    nameOf,
+    folderFor(networkId),
+  )
     .slice(0, 50)
     .map((c) => ({
       nick: c.nick,

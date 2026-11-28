@@ -313,6 +313,7 @@ import {
 import { shouldRepinOnSend } from '../utils/sendScroll.js';
 import { applySpoilerMarkup } from '../utils/spoilerMarkup.js';
 import { buildNickCandidates } from '../utils/nickCompletion.js';
+import { folderFor } from '../utils/foldName.js';
 import { useDisplayNames } from '../composables/useDisplayNames.js';
 import { buildChannelCandidates } from '../utils/channelCompletion.js';
 import { parseAwayFlag } from '../utils/awayFlag.js';
@@ -1127,8 +1128,13 @@ function buildNickMatches(buf: Buffer, networkId: number, prefix: string): strin
   const own = networks.states[networkId]?.nick || '';
   const isIgnored = (nick: string, userhost: string | null) =>
     ignores.isIgnored(networkId, nick, userhost ?? '');
-  return buildNickCandidates(buf, own, prefix, isIgnored, (nick) =>
-    displayNames.plainDisplayNameFor(networkId, nick),
+  return buildNickCandidates(
+    buf,
+    own,
+    prefix,
+    isIgnored,
+    (nick) => displayNames.plainDisplayNameFor(networkId, nick),
+    folderFor(networkId),
   ).map((c) => c.nick);
 }
 
@@ -1138,8 +1144,13 @@ function buildNickStripItems(buf: Buffer, networkId: number, prefix: string): Ni
   const own = networks.states[networkId]?.nick || '';
   const isIgnored = (nick: string, userhost: string | null) =>
     ignores.isIgnored(networkId, nick, userhost ?? '');
-  return buildNickCandidates(buf, own, prefix, isIgnored, (nick) =>
-    displayNames.plainDisplayNameFor(networkId, nick),
+  return buildNickCandidates(
+    buf,
+    own,
+    prefix,
+    isIgnored,
+    (nick) => displayNames.plainDisplayNameFor(networkId, nick),
+    folderFor(networkId),
   )
     .slice(0, 30)
     .map((c) => ({ nick: c.nick, color: nickColors.color(c.nick, networkId) }));

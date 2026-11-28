@@ -400,6 +400,11 @@ describe('MessageInput Tab-completion', () => {
       const { el } = await mountComposer();
 
       await type(el, '@m');
+      // The picker's own rows; it lists bottom-up, nearest the input first.
+      const rows = [...document.querySelectorAll('.vertical-popover .row')]
+        .map((r) => r.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+        .toReversed();
+      expect(rows).toEqual(['mallory', 'me']);
       await tab(el);
       expect(el.value).toBe('mallory: ');
       await tab(el);

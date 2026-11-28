@@ -143,6 +143,26 @@ describe('ThreadComposer', () => {
     expect(ta.value).toBe('hey alice ');
   });
 
+  it('Tab offers your own nick last, wherever the member list holds it', async () => {
+    seed();
+    useBuffersStore()
+      .ensure(1, '#chan', 9)
+      .members.unshift({
+        nick: 'alfie',
+        modes: [],
+        away: false,
+      } as never);
+    useNetworksStore().states[1]!.nick = 'alfie';
+    const ta = await type('al');
+    ta.setSelectionRange(2, 2);
+    const seen: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      await wrapper!.find('textarea').trigger('keydown', { key: 'Tab' });
+      seen.push(ta.value);
+    }
+    expect(seen).toEqual(['alice: ', 'albert: ', 'alfie: ']);
+  });
+
   it('Tab at the start of a line takes the channel’s completion suffix', async () => {
     seed();
     useSettingsStore().values['input.completion.nick_suffix'] = ',';
