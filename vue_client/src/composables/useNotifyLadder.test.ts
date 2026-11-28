@@ -171,10 +171,13 @@ describe('useNotifyLadder with custom rules', () => {
     useIgnoresStore().applySnapshot([{ networkId: 1, ignoredMasks: rules }], global);
   const picked = (items: Items) => items.find((i) => i.icon === CircleDotIcon)?.label;
   const box = (items: Items) => items.find((i) => i.label === 'Suppress Highlights')!;
+  const rungs = (items: Items) => items.filter((i) => i.label && i.label !== 'Suppress Highlights');
+  const rungsLocked = (items: Items) => rungs(items).every((i) => i.disabled);
+  const rungsOpen = (items: Items) => rungs(items).every((i) => !i.disabled);
+  const noted = (items: Items) => items.some((i) => i.note === CUSTOM_NOTE);
   const locked = (items: Items) =>
-    items.filter((i) => i.label).every((i) => i.disabled) &&
-    items.some((i) => i.note === CUSTOM_NOTE);
-  const open = (items: Items) => items.every((i) => !i.disabled) && !items.some((i) => i.note);
+    rungsLocked(items) && noted(items) && (box(items)?.disabled ?? true);
+  const open = (items: Items) => items.every((i) => !i.disabled) && !noted(items);
 
   beforeEach(() => setActivePinia(createPinia()));
 
@@ -198,7 +201,45 @@ describe('useNotifyLadder with custom rules', () => {
     seed([rule({ levels: ['NOUNREAD', 'NONOTIFY'], expiresAt: '2999-01-01T00:00:00.000Z' })]);
     const items = useNotifyLadder().channelItems(1, '#chan');
     expect(picked(items)).toBe('Muted');
-    expect(locked(items)).toBe(true);
+    expect(rungsLocked(items)).toBe(true);
+    expect(noted(items)).toBe(true);
+    // The box is a rule of its own and stays usable.
+    expect(box(items).disabled).toBeFalsy();
+  });
+
+  it('locks only the box for a timed Suppress Highlights', () => {
+    seed([rule({ levels: ['NOHIGHLIGHT'], expiresAt: '2999-01-01T00:00:00.000Z' })]);
+    const items = useNotifyLadder().channelItems(1, '#chan');
+    expect(box(items).icon).toBe(SquareCheckIcon);
+    expect(box(items).disabled).toBe(true);
+    expect(rungsOpen(items)).toBe(true);
+    expect(noted(items)).toBe(true);
+  });
+
+  it('does not edit a hand-typed NOUNREAD with no NONOTIFY', () => {
+    seed([rule({ levels: ['NOUNREAD'] })]);
+    const items = useNotifyLadder().channelItems(1, '#chan');
+    expect(rungsLocked(items)).toBe(true);
+  });
+
+  it('does not reconcile against a lapsed rule the server has yet to sweep', () => {
+    const ignores = useIgnoresStore();
+    const add = vi.spyOn(ignores, 'addRule').mockImplementation(() => undefined as never);
+    const remove = vi.spyOn(ignores, 'removeRule').mockImplementation(() => undefined as never);
+    seed([rule({ levels: ['NOUNREAD', 'NONOTIFY'], expiresAt: '2001-01-01T00:00:00.000Z' })]);
+    useNotifyLadder()
+      .channelItems(1, '#chan')
+      .find((i) => i.label === 'Muted')!.onClick!();
+    expect(add).toHaveBeenCalledTimes(1);
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("shows the menu's own Nothing over All messages, as the veto would", () => {
+    seed([rule({ levels: ['NONOTIFY'] })]);
+    useChannelNotifyStore().applyChange(1, '#chan', { notifyAlways: true });
+    const items = useNotifyLadder().channelItems(1, '#chan');
+    expect(picked(items)).toBe('Nothing');
+    expect(open(items)).toBe(true);
   });
 
   it('ignores a timed mute that has lapsed', () => {

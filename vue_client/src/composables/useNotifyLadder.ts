@@ -25,9 +25,10 @@
 // What the menu SHOWS is read from every silencing rule at that scope, not
 // only the ones it writes (the ignores store's bufferSilencing /
 // networkSilencing). When those are not exactly the menu's own shapes (a rule
-// combining the levels, a timed mute, two of a kind) the rows show what is in
-// force but are disabled, with a line saying a custom rule has them: a change
-// from here would rewrite or strand what the user typed.
+// combining the levels, a timed mute, two of a kind) the rows they govern show
+// what is in force but are disabled, with a line saying a custom rule has
+// them: a change from here would rewrite or strand what the user typed. "At
+// that scope" is exact: a channel's menu does not show its network's level.
 //
 // Under the hood the suppressor rungs are ignore rules: "Nothing" = a NONOTIFY
 // rule, "Muted" = NONOTIFY + NOUNREAD, both scoped to the buffer (channel/DM
@@ -75,14 +76,22 @@ export function useNotifyLadder() {
     return { label, icon: active ? CircleDotIcon : CircleIcon, onClick };
   }
 
-  // The rows as given, or, when a custom rule has this scope, the same rows
-  // disabled over a line saying so.
-  function guarded(custom: boolean, rows: ContextMenuItem[]): ContextMenuItem[] {
-    if (!custom) return rows;
-    return [
-      ...rows.map((row) => (row.heading ? row : { ...row, disabled: true })),
-      { note: CUSTOM_NOTE },
+  // The rows as given, or, where a custom rule has them, disabled over a line
+  // saying so. The level rows and the Suppress Highlights box are held apart:
+  // a timed mute does not stop the box, which is a rule of its own.
+  function guarded(
+    state: { muteCustom: boolean; suppressCustom: boolean },
+    rungs: ContextMenuItem[],
+    box: ContextMenuItem | null,
+  ): ContextMenuItem[] {
+    const off = (row: ContextMenuItem) => ({ ...row, disabled: true });
+    const rows: ContextMenuItem[] = [
+      { heading: 'Notifications' },
+      ...(state.muteCustom ? rungs.map(off) : rungs),
     ];
+    if (box) rows.push(state.suppressCustom ? off(box) : box);
+    if (state.muteCustom || (box && state.suppressCustom)) rows.push({ note: CUSTOM_NOTE });
+    return rows;
   }
 
   // Reconcile the per-buffer (or, when channels is null, per-network) mute rule
@@ -142,13 +151,12 @@ export function useNotifyLadder() {
   // ---- Channel: 4 rungs (notify_always + buffer mute rule) ------------------
   function channelItems(networkId: number, target: string): ContextMenuItem[] {
     const notifyAlways = channelNotify.notifyAlways(networkId, target);
-    const { levels, custom } = ignores.bufferSilencing(networkId, target);
-    // A custom rule that silences wins over All messages, as it does when a
-    // line arrives (the ignore veto).
+    const state = ignores.bufferSilencing(networkId, target);
+    const { levels } = state;
+    // A rule that silences wins over All messages, as it does when a line
+    // arrives (the ignore veto).
     const current: Rung =
-      notifyAlways && !(custom && levels.includes('NONOTIFY'))
-        ? 'all'
-        : rungFromLevels(levels, 'highlights');
+      notifyAlways && !levels.includes('NONOTIFY') ? 'all' : rungFromLevels(levels, 'highlights');
     // Each rung is a target, so it reconciles against the state as it is when
     // tapped, not as it was when the menu opened (#1136).
     const set = (rung: Rung) => {
@@ -159,55 +167,63 @@ export function useNotifyLadder() {
         target.toLowerCase(),
       ]);
     };
-    return guarded(custom, [
-      { heading: 'Notifications' },
-      rungItem('All messages', current === 'all', () => set('all')),
-      rungItem('Highlights only', current === 'highlights', () => set('highlights')),
-      rungItem('Nothing', current === 'nothing', () => set('nothing')),
-      rungItem('Muted', current === 'muted', () => set('muted')),
+    return guarded(
+      state,
+      [
+        rungItem('All messages', current === 'all', () => set('all')),
+        rungItem('Highlights only', current === 'highlights', () => set('highlights')),
+        rungItem('Nothing', current === 'nothing', () => set('nothing')),
+        rungItem('Muted', current === 'muted', () => set('muted')),
+      ],
       suppressItem(
         networkId,
         levels.includes('NOHIGHLIGHT'),
         () => ignores.bufferSuppressRule(networkId, target),
         [target.toLowerCase()],
       ),
-    ]);
+    );
   }
 
   // ---- DM: 3 rungs (buffer mute rule only, no notify_always) ----------------
   function dmItems(networkId: number, target: string): ContextMenuItem[] {
-    const { levels, custom } = ignores.bufferSilencing(networkId, target);
-    const current: Rung = rungFromLevels(levels, 'all');
+    const state = ignores.bufferSilencing(networkId, target);
+    const current: Rung = rungFromLevels(state.levels, 'all');
     const set = (rung: Rung) =>
       reconcileRule(networkId, ignores.bufferMuteRule(networkId, target), levelsForRung(rung), [
         target.toLowerCase(),
       ]);
-    return guarded(custom, [
-      { heading: 'Notifications' },
-      rungItem('All messages', current === 'all', () => set('all')),
-      rungItem('Nothing', current === 'nothing', () => set('nothing')),
-      rungItem('Muted', current === 'muted', () => set('muted')),
-    ]);
+    return guarded(
+      state,
+      [
+        rungItem('All messages', current === 'all', () => set('all')),
+        rungItem('Nothing', current === 'nothing', () => set('nothing')),
+        rungItem('Muted', current === 'muted', () => set('muted')),
+      ],
+      null,
+    );
   }
 
   // ---- Network: 3 rungs (network-wide mute rule) ----------------------------
   function networkItems(networkId: number): ContextMenuItem[] {
-    const { levels, custom } = ignores.networkSilencing(networkId);
+    const state = ignores.networkSilencing(networkId);
+    const { levels } = state;
     const current: Rung = rungFromLevels(levels, 'highlights');
     const set = (rung: Rung) =>
       reconcileRule(networkId, ignores.networkMuteRule(networkId), levelsForRung(rung), null);
-    return guarded(custom, [
-      { heading: 'Notifications' },
-      rungItem('Highlights only', current === 'highlights', () => set('highlights')),
-      rungItem('Nothing', current === 'nothing', () => set('nothing')),
-      rungItem('Muted', current === 'muted', () => set('muted')),
+    return guarded(
+      state,
+      [
+        rungItem('Highlights only', current === 'highlights', () => set('highlights')),
+        rungItem('Nothing', current === 'nothing', () => set('nothing')),
+        rungItem('Muted', current === 'muted', () => set('muted')),
+      ],
       suppressItem(
         networkId,
         levels.includes('NOHIGHLIGHT'),
         () => ignores.networkSuppressRule(networkId),
         null,
       ),
-    ]);
+    );
   }
 
   return { channelItems, dmItems, networkItems };

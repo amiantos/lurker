@@ -40,8 +40,17 @@ function findMuteRule(
   scopeMatches: (e: IgnoreEntry) => boolean,
   levelsMatch: (levels: string[]) => boolean = isMuteOnlyLevels,
 ): IgnoreEntryWithNetwork | null {
+  // A lapsed timed rule is gone as far as the menus show (silencingAt), so it
+  // is not one to reconcile against either: the server sweeps it within a
+  // minute, and until then a tap would find it and do nothing.
+  const now = Date.now();
   const ok = (e: IgnoreEntry) =>
-    !e.mask && !e.pattern && !e.isExcept && scopeMatches(e) && levelsMatch(e.levels);
+    !e.mask &&
+    !e.pattern &&
+    !e.isExcept &&
+    !lapsed(e, now) &&
+    scopeMatches(e) &&
+    levelsMatch(e.levels);
   const net = netList.find(ok);
   if (net) return { ...net, networkId };
   const g = globalList.find(ok);
@@ -53,17 +62,25 @@ function findMuteRule(
 // pattern or exception, hides nothing, and has not lapsed: those are the rules
 // that silence the whole channel, DM or network.
 //
-// `levels` is all of theirs together. `custom` says the menus must not edit:
-// the rules are not exactly the shapes the menus write (at most one mute rule
-// and one NOHIGHLIGHT rule, neither timed), so a change from the menu would
-// rewrite or strand something the user typed. A combined rule
-// (`NOUNREAD NONOTIFY NOHIGHLIGHT`), a timed mute and a duplicate all land
-// here; the menu shows what is in force and leaves it to the ignore editor.
+// `levels` is all of theirs together. The two `custom` flags say which part of
+// the menu must not edit, because the rules behind it are not exactly the
+// shapes the menu writes and a change from the menu would rewrite or strand
+// something the user typed:
+//   muteCustom      the level rows. The menu writes one untimed rule, NONOTIFY
+//                   or NOUNREAD+NONOTIFY.
+//   suppressCustom  the Suppress Highlights box. The menu writes one untimed
+//                   rule, NOHIGHLIGHT alone.
+// A rule mixing the two (`NOUNREAD NONOTIFY NOHIGHLIGHT`) sets both; a timed
+// rule, a second rule of a kind, or a NOUNREAD with no NONOTIFY sets its own.
 export interface ScopeSilencing {
   levels: string[];
-  custom: boolean;
+  muteCustom: boolean;
+  suppressCustom: boolean;
 }
 const SILENCING_LEVELS = new Set(['NOUNREAD', 'NONOTIFY', 'NOHIGHLIGHT']);
+function lapsed(e: IgnoreEntry, now: number): boolean {
+  return !!e.expiresAt && Date.parse(e.expiresAt) <= now;
+}
 function silencingAt(
   netList: IgnoreEntry[],
   globalList: IgnoreEntry[],
@@ -73,19 +90,28 @@ function silencingAt(
   const levels = new Set<string>();
   let mutes = 0;
   let suppresses = 0;
-  let custom = false;
+  let muteCustom = false;
+  let suppressCustom = false;
   for (const e of [...netList, ...globalList]) {
     if (e.mask || e.pattern || e.isExcept || !scopeMatches(e)) continue;
     if (!e.levels.length || !e.levels.every((l) => SILENCING_LEVELS.has(l))) continue;
-    if (e.expiresAt && Date.parse(e.expiresAt) <= now) continue;
+    if (lapsed(e, now)) continue;
     for (const l of e.levels) levels.add(l);
-    if (e.expiresAt) custom = true;
-    if (isSuppressOnlyLevels(e.levels)) suppresses += 1;
-    else if (isMuteOnlyLevels(e.levels)) mutes += 1;
-    else custom = true;
+    const timed = !!e.expiresAt;
+    if (isSuppressOnlyLevels(e.levels)) {
+      suppresses += 1;
+      if (timed) suppressCustom = true;
+    } else if (isMuteOnlyLevels(e.levels)) {
+      mutes += 1;
+      if (timed || !e.levels.includes('NONOTIFY')) muteCustom = true;
+    } else {
+      muteCustom = true;
+      suppressCustom = true;
+    }
   }
-  if (mutes > 1 || suppresses > 1) custom = true;
-  return { levels: [...levels], custom };
+  if (mutes > 1) muteCustom = true;
+  if (suppresses > 1) suppressCustom = true;
+  return { levels: [...levels], muteCustom, suppressCustom };
 }
 
 // Ignore rules (issue #301; global-vs-network scoping #350). Server is the
