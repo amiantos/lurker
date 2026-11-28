@@ -8,6 +8,7 @@
     ref="scroller"
     class="message-list"
     :class="{ compact: compactMode, avatars: showAvatars }"
+    :style="nickColumnFloor ? { '--nick-col-floor': `${nickColumnFloor}px` } : undefined"
     @scroll="onScroll"
     @wheel="onWheel"
   >
@@ -690,6 +691,38 @@ const tsFormat = computed(() =>
 
 const scroller = ref<HTMLElement | null>(null);
 const stickToBottom = ref(true);
+
+// The traditional layout's nick column is as wide as the widest nick drawn
+// (#1405), and while a buffer is open it only ever grows. A column that also
+// shrank would rewrap every line each time the widest nick's row left the
+// loaded window, and again when that nick next spoke. This is the widest the
+// column has been for this buffer, in px, handed back to the grid as its
+// floor (--nick-col-floor); 0 is no floor yet.
+const nickColumnFloor = ref(0);
+// The font the floor was measured in: pixels from another size mean nothing.
+let nickColumnFont = '';
+
+function measureNickColumn() {
+  const el = scroller.value;
+  if (!el || compactMode.value) return;
+  const cs = getComputedStyle(el);
+  const font = `${cs.fontSize} ${cs.fontFamily}`;
+  if (font !== nickColumnFont) {
+    nickColumnFont = font;
+    if (nickColumnFloor.value !== 0) {
+      // Drop the stale floor, and measure the column it leaves once drawn.
+      nickColumnFloor.value = 0;
+      void nextTick(measureNickColumn);
+      return;
+    }
+  }
+  // The grid's resolved tracks: time, nick, text. A phone's width has two
+  // and no floor to keep.
+  const tracks = (cs.gridTemplateColumns ?? '').split(' ');
+  if (tracks.length !== 3) return;
+  const width = parseFloat(tracks[1]);
+  if (Number.isFinite(width) && width > nickColumnFloor.value + 0.5) nickColumnFloor.value = width;
+}
 
 // Consolidated runs the reader has opened (#1430): one set per run, of the
 // row keys of its events. A run is open while ANY of its rows is in one. A
@@ -1864,6 +1897,10 @@ const renderRows = computed((): RenderRow[] => {
   return final;
 });
 
+// After every draw: a wider nick may have widened the column.
+watch(renderRows, measureNickColumn, { flush: 'post' });
+onMounted(measureNickColumn);
+
 // Tell the buffers store whether the unread divider is on screen
 // (lib/unreadDivider): a live line keeps a boundary only when it is, and one
 // past the read pointer can be hidden here (an ignored sender, a thread reply,
@@ -2656,6 +2693,18 @@ watch(
       ensureViewportFilled();
       return;
     }
+    // An append while scrolled up adds a row below the viewport, and usually
+    // that is all it does. But a nick wider than any drawn so far widens the
+    // nick column (#1405), which rewraps the lines above the reader too, so
+    // hold the row at the top of their view where it is.
+    if (appended && !firstChanged && !replaced && !stickToBottom.value) {
+      const anchorId = topVisibleMessageId(el);
+      if (anchorId != null) await pinAnchorRow(el, anchorId, false);
+      else await nextTick();
+      if (!isDetached) maybeBumpNewBelow();
+      ensureViewportFilled();
+      return;
+    }
     await nextTick();
     if (replaced) {
       if (isDetached) {
@@ -2713,6 +2762,8 @@ watch(
 watch(
   () => networks.activeKey,
   async () => {
+    // Another buffer, another set of nicks: its column starts from nothing.
+    nickColumnFloor.value = 0;
     stickToBottom.value = true;
     unreadSeen = false;
     unreadExpired = false;
@@ -3055,10 +3106,13 @@ watch(
      taken up by the shared first and last tracks, so columns stay aligned). */
   padding: var(--space-2) 0;
   display: grid;
-  /* Nick column has a 16ch floor (matching the most common modern NICKLEN)
-     so the layout is consistent across buffers regardless of who's talking,
-     and stretches if a network advertises a higher limit. */
-  grid-template-columns: max-content minmax(16ch, max-content) minmax(0, 1fr);
+  /* The nick column fits the widest nick drawn (#1405), so the widest sits
+     one character from the time. --nick-col-floor is the widest it has been
+     while this buffer is open (measureNickColumn): it grows and never
+     shrinks, so lines are not rewrapped as nicks come and go. */
+  grid-template-columns:
+    max-content minmax(var(--nick-col-floor, 0px), max-content)
+    minmax(0, 1fr);
   grid-auto-rows: min-content;
   align-content: start;
   column-gap: 0;
@@ -3348,10 +3402,9 @@ watch(
 }
 /* .msg-link styling lives in src/assets/main.css (shared with the topic bar). */
 
-/* Mobile + standard layout: phone widths can't spare the time column or the
-   16ch nick floor — either alone would leave 10ch for the body. We drop the
-   time column entirely and let the nick column collapse to the widest
-   currently-visible nick. Scoped to :not(.compact) because compact mode
+/* Mobile + standard layout: phone widths can't spare the time column or a
+   floor under the nick column. We drop the time column entirely and let the
+   nick column collapse to the widest currently-visible nick. Scoped to :not(.compact) because compact mode
    handles narrow viewports natively via its head-line layout, and the bare
    `.time { display: none }` would otherwise hide the time inside compact's
    head element. */
