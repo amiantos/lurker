@@ -3,7 +3,7 @@
 
 import { HashIcon, PlugIcon, PlusIcon, SettingsIcon, UnplugIcon, UserPenIcon } from '@lucide/vue';
 import type { ContextMenuItem } from './useContextMenu.js';
-import { useContextMenu } from './useContextMenu.js';
+import { checkboxItem, useContextMenu } from './useContextMenu.js';
 import { useChannelListModal } from './useChannelListModal.js';
 import { useJoinChannelModal } from './useJoinChannelModal.js';
 import { useNetworkEditor } from './useNetworkEditor.js';
@@ -67,6 +67,15 @@ export function useNetworkActions() {
     };
   }
 
+  // Per network (#1034). Shared with the phone's server kebab, like
+  // connectionItem.
+  function hideMutedItem(networkId: number): ContextMenuItem {
+    const on = !!networks.networkById(networkId)?.hide_muted;
+    return checkboxItem('Hide Muted Channels', on, (next) =>
+      networks.setHideMuted(networkId, next),
+    );
+  }
+
   function buildItems(net: Network): ContextMenuItem[] {
     const state = networks.states[net.id]?.state;
     const isConnected = state === 'connected';
@@ -106,6 +115,8 @@ export function useNetworkActions() {
       // every buffer on the network.
       { divider: true },
       ...notify.networkItems(net.id),
+      { divider: true },
+      hideMutedItem(net.id),
     ];
   }
 
@@ -119,5 +130,5 @@ export function useNetworkActions() {
     menu.open(buildItems(net), x, y);
   }
 
-  return { openMenuFromButton, onNetworkContextMenu, connectionItem };
+  return { openMenuFromButton, onNetworkContextMenu, connectionItem, hideMutedItem };
 }

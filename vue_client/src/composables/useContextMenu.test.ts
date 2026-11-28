@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { markRaw } from 'vue';
-import { useContextMenu, type ContextMenuItem } from './useContextMenu.js';
+import { SquareCheckIcon, SquareIcon } from '@lucide/vue';
+import { checkboxItem, useContextMenu, type ContextMenuItem } from './useContextMenu.js';
 
 // The store is a module-level singleton, so reset between cases. open() compares
 // triggerEl by reference (the DOM `contains` check lives in the component). Real
@@ -54,5 +55,25 @@ describe('useContextMenu toggle', () => {
     menu.open(items, 10, 20, triggerA);
     menu.open([], 10, 20, triggerA);
     expect(menu.state.open).toBe(false);
+  });
+});
+
+describe('checkboxItem', () => {
+  it('shows its state in the icon and keeps its label', () => {
+    expect(checkboxItem('Hide', true, () => {})).toMatchObject({
+      label: 'Hide',
+      icon: SquareCheckIcon,
+    });
+    expect(checkboxItem('Hide', false, () => {})).toMatchObject({
+      label: 'Hide',
+      icon: SquareIcon,
+    });
+  });
+
+  it('asks for the opposite of the state it showed', () => {
+    const set = vi.fn<(next: boolean) => void>();
+    checkboxItem('Hide', false, set).onClick!();
+    checkboxItem('Hide', true, set).onClick!();
+    expect(set.mock.calls).toEqual([[true], [false]]);
   });
 });

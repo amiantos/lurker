@@ -1543,6 +1543,10 @@ ensureColumn('networks', 'user_modes', 'TEXT');
 // On for everyone; off for a network whose server exempts the user (an oper,
 // a bouncer that paces upstream itself), where waiting only slows them down.
 ensureColumn('networks', 'flood_protection', 'INTEGER NOT NULL DEFAULT 1');
+// Whether the sidebar folds this network down to its header (#1432). View
+// state, kept here so it follows the user between devices.
+ensureColumn('networks', 'collapsed', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('networks', 'hide_muted', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('users', 'password_hash', 'TEXT');
 ensureColumn('users', 'last_seen_at', 'TEXT');
 // Account access state, orthogonal to role. A paused account keeps all its data

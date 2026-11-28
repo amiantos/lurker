@@ -8,6 +8,7 @@ import {
 } from '../../../shared/casemapping.js';
 import { defineStore } from 'pinia';
 import { api } from '../api.js';
+import { socketSend } from '../composables/useSocket.js';
 import { useAuthStore } from './auth.js';
 import { isVirtualKey } from '../lib/virtualBuffers.js';
 import { dccChatPeer, isDccChatTarget } from '../../../shared/channels.js';
@@ -367,6 +368,31 @@ export const useNetworksStore = defineStore('networks', {
       if (idx >= 0) this.networks[idx] = network;
       return network as Network;
     },
+    // Fold or unfold a network in the sidebar (#1432). Set here as it is sent,
+    // so the click answers at once; the server's echo (applyCollapsed) lands
+    // on every tab, this one included. With the socket down nothing is sent
+    // and nothing changes: a fold the server never heard of would be gone on
+    // the next load.
+    setCollapsed(id: number, collapsed: boolean) {
+      if (socketSend({ type: 'set-network-collapsed', networkId: id, collapsed })) {
+        this.applyCollapsed(id, collapsed);
+      }
+    },
+    applyCollapsed(id: number, collapsed: boolean) {
+      const net = this.networks.find((n) => n.id === id);
+      if (net) net.collapsed = collapsed;
+    },
+    // Hide or show a network's muted channels in the sidebar (#1034). Same
+    // shape as the fold.
+    setHideMuted(id: number, hideMuted: boolean) {
+      if (socketSend({ type: 'set-network-hide-muted', networkId: id, hideMuted })) {
+        this.applyHideMuted(id, hideMuted);
+      }
+    },
+    applyHideMuted(id: number, hideMuted: boolean) {
+      const net = this.networks.find((n) => n.id === id);
+      if (net) net.hide_muted = hideMuted;
+    },
     // Rewrite sidebar order. Server validates the id set; on 409 it echoes the
     // authoritative list, which we apply so the UI snaps back to truth instead
     // of staying out of sync after a concurrent add/delete from another tab.
@@ -482,6 +508,15 @@ export const useNetworksStore = defineStore('networks', {
         };
       }
       this.states = map;
+      // Sidebar view state rides the snapshot too, so a change made while
+      // this client was away arrives on reconnect. Only when the server says
+      // so: an older one sends neither field.
+      for (const snap of networks as Array<NetworkState & Record<string, unknown>>) {
+        if (typeof snap.collapsed === 'boolean')
+          this.applyCollapsed(snap.networkId, snap.collapsed);
+        if (typeof snap.hideMuted === 'boolean')
+          this.applyHideMuted(snap.networkId, snap.hideMuted);
+      }
     },
     applyState(event: any) {
       const existing = this.states[event.networkId] || { networkId: event.networkId, channels: [] };

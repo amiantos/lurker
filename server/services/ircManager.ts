@@ -1718,15 +1718,22 @@ class IrcManager extends EventEmitter {
     const notesByNetwork = listNickNotesGrouped(userId);
     const nickMetadataByNetwork = listNickMetadataGrouped(userId);
     const relayBotsByNetwork = listRelayBotsGrouped(userId);
+    const networksById = new Map(listNetworksForUser(userId).map((n) => [n.id, n]));
     // Attach the per-network user-preference blobs to a base snapshot. Shared by
     // the live-connection and offline branches so both shapes stay identical.
     const withExtras = <T extends { networkId: number }>(snap: T) => {
       const networkId = snap.networkId;
+      const net = networksById.get(networkId);
       const chatHosts = dccChatHostsFor(dccChatKey(userId, networkId));
       return {
         ...snap,
         pinned: pinsByNetwork.get(networkId) || [],
         collapsedNicklists: collapsedByNetwork.get(networkId) || {},
+        // Sidebar view state (#1432, #1034). Here as well as on the REST
+        // payload, so a client that was away for the change hears of it on
+        // reconnect.
+        collapsed: !!net?.collapsed,
+        hideMuted: !!net?.hide_muted,
         channelNotify: notifyByNetwork.get(networkId) || {},
         // The E2E-enabled channels, so a client can mark them (#422).
         e2eChannels: e2eManager.enabledChannelNames(userId, networkId),
@@ -1770,7 +1777,7 @@ class IrcManager extends EventEmitter {
     // instead of hiding them until a connection exists. Buffer rows themselves
     // arrive via the backlog frames, so channels can be empty here — members
     // are meaningless offline and topic/members repopulate on reconnect.
-    for (const net of listNetworksForUser(userId)) {
+    for (const net of networksById.values()) {
       if (liveIds.has(net.id)) continue;
       out.push(
         withExtras({

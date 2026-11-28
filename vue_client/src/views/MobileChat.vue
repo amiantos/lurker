@@ -47,7 +47,7 @@
         </RouterLink>
       </header>
       <div class="bufferlist-wrap" @click="onBufferListClick">
-        <BufferList />
+        <BufferList no-fold />
       </div>
     </section>
 
@@ -492,6 +492,7 @@ function openBufferActions() {
         disabled: !profileEditor.canOpen(a.networkId),
         onClick: () => profileEditor.open(a.networkId),
       },
+      networkActions.hideMutedItem(a.networkId),
     );
   } else {
     items.push(...bufferActions.buildItems(activeBuf.value as BufferLike));

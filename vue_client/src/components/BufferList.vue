@@ -159,7 +159,7 @@
             class="net-head"
             :class="netHeadClasses(net.id)"
             :title="`Open ${net.name} server buffer`"
-            @click="select(net.id, serverTarget(net.id))"
+            @click="selectNetHead(net)"
             @contextmenu.prevent="
               networkActions.onNetworkContextMenu(net, $event.clientX, $event.clientY)
             "
@@ -172,12 +172,22 @@
               :title="`${serverHighlights(net.id)} highlight${serverHighlights(net.id) === 1 ? '' : 's'}`"
               >●</span
             >
-            <span
-              v-if="countFor(serverUnread(net.id), serverHighlights(net.id)) > 0"
-              class="badge"
-              >{{ unreadLabel(countFor(serverUnread(net.id), serverHighlights(net.id))) }}</span
-            >
+            <span v-if="netHeadCount(net.id) > 0" class="badge">{{
+              unreadLabel(netHeadCount(net.id))
+            }}</span>
             <div class="net-actions">
+              <button
+                type="button"
+                class="net-action"
+                :title="isNetOpen(net.id) ? 'Collapse network' : 'Expand network'"
+                :aria-label="isNetOpen(net.id) ? 'Collapse network' : 'Expand network'"
+                :aria-expanded="isNetOpen(net.id)"
+                @click.stop="onFoldClick(net, $event)"
+                @contextmenu.stop.prevent
+              >
+                <ChevronDownIcon v-if="isNetOpen(net.id)" />
+                <ChevronRightIcon v-else />
+              </button>
               <button
                 type="button"
                 class="net-action net-add"
@@ -211,7 +221,7 @@
              if the finger moves more than 5px during the delay, so scroll
              intent is recognised early. Desktop mouse drag stays instant. -->
           <draggable
-            v-if="(pinnedBufsByNet[net.id] || []).length"
+            v-if="isNetOpen(net.id) && (pinnedBufsByNet[net.id] || []).length"
             :list="pinnedBufsByNet[net.id]"
             item-key="target"
             tag="ul"
@@ -264,14 +274,20 @@
           </draggable>
 
           <div
-            v-if="(pinnedBufsByNet[net.id] || []).length && unpinnedBufs(net.id).length"
+            v-if="
+              isNetOpen(net.id) &&
+              (pinnedBufsByNet[net.id] || []).length &&
+              unpinnedBufs(net.id).length
+            "
             class="pin-divider"
             aria-hidden="true"
           ></div>
 
-          <ul v-if="unpinnedBufs(net.id).length" class="channels">
+          <!-- Open: the unpinned rows. Folded: only the network's highlighted
+               rows and, if you folded it while in it, the one you are in. -->
+          <ul v-if="plainRows(net.id).length" class="channels">
             <li
-              v-for="buf in unpinnedBufs(net.id)"
+              v-for="buf in plainRows(net.id)"
               :key="buf.target"
               :class="rowClasses(buf, net.id)"
               :title="dmTitle(buf)"
@@ -371,6 +387,15 @@ import {
 import { isChannelTarget } from '../../../shared/channels.js';
 import { bufferSortKey } from '../utils/bufferOrder.js';
 import {
+  closedNetworkView,
+  isNetworkOpen,
+  stepVisit,
+  type VisitState,
+} from '../utils/networkFold.js';
+import { hidesMutedRow } from '../utils/mutedRows.js';
+import {
+  ChevronDownIcon,
+  ChevronRightIcon,
   ChevronsLeftIcon,
   EllipsisVerticalIcon,
   PencilIcon,
@@ -544,17 +569,122 @@ function isFavoriteBuf(b: Buffer): boolean {
   );
 }
 
+// "Hide Muted Channels" (#1034), a per-network switch in the network's menu.
+// Only ever asked of unpinned, unfavorited rows; see utils/mutedRows.
+function isHiddenMuted(networkId: number, buf: Buffer): boolean {
+  const hideMuted = !!networks.networkById(networkId)?.hide_muted;
+  return hidesMutedRow({
+    hideMuted,
+    muted: hideMuted && isChannelMuted(buf),
+    highlighted: buf.highlighted,
+    active: isActive(networkId, buf.target),
+    kept: false,
+  });
+}
+
 function unpinnedBufs(networkId: number): Buffer[] {
   const pinnedSet = new Set(pins.forNetwork(networkId));
   return buffers
     .forNetwork(networkId)
-    .filter((b) => !isServerBuffer(b) && !pinnedSet.has(b.target) && !isFavoriteBuf(b))
+    .filter(
+      (b) =>
+        !isServerBuffer(b) &&
+        !pinnedSet.has(b.target) &&
+        !isFavoriteBuf(b) &&
+        !isHiddenMuted(networkId, b),
+    )
     .toSorted((a, b) => {
       const oa = bufferOrder(a);
       const ob = bufferOrder(b);
       if (oa !== ob) return oa - ob;
       return sortKey(a.target).localeCompare(sortKey(b.target));
     });
+}
+
+// Folding networks (#1432), by hand per network. Going into a folded network opens it for the visit; leaving folds it
+// again. See utils/networkFold for the rules; this is the wiring.
+//
+// The phone layout passes `no-fold`: it has no chevron, and a network folded
+// on the desktop would arrive there with no way to open it for good.
+const props = defineProps<{ noFold?: boolean }>();
+const visit = ref<VisitState>({ open: null, last: null });
+// Where you are: the active buffer, and whether it is listed as a favorite.
+// Both, because favorites load after the first buffer is active, and a buffer
+// can be favorited while you are in it; either moves it out of its network.
+const activeIsFavorite = computed(() => {
+  const buf = networks.activeKey ? buffers.byKey(networks.activeKey) : null;
+  return !!buf && isFavoriteBuf(buf);
+});
+watch(
+  [() => networks.activeKey, activeIsFavorite],
+  ([key]) => {
+    const buf = key ? buffers.byKey(key) : null;
+    // A key with no buffer behind it yet still says where you are: the system
+    // buffer's has no network id in front, every other one does.
+    const keyNet = key ? Number(key.split('::')[0]) : NaN;
+    const place = buf
+      ? { networkId: buf.networkId ?? null, favorite: isFavoriteBuf(buf) }
+      : key
+        ? { networkId: Number.isInteger(keyNet) ? keyNet : null, favorite: false }
+        : null;
+    visit.value = stepVisit(visit.value, place);
+  },
+  { immediate: true },
+);
+function isNetOpen(networkId: number): boolean {
+  if (props.noFold) return true;
+  return isNetworkOpen({
+    id: networkId,
+    collapsed: !!networks.networkById(networkId)?.collapsed,
+    openNetworkId: visit.value.open,
+  });
+}
+// The chevron. It shows, and flips, what is on screen: a folded network open
+// for a visit reads as open, and folding it ends the visit, which leaves the
+// header and the one buffer you are in.
+function toggleFold(net: Network): void {
+  if (!isNetOpen(net.id)) {
+    networks.setCollapsed(net.id, false);
+    return;
+  }
+  if (visit.value.open === net.id) visit.value = { ...visit.value, open: null };
+  if (!net.collapsed) networks.setCollapsed(net.id, true);
+}
+// The header's buttons show while anything in it has focus, and unlike its
+// neighbours this one opens nothing to take the focus away. So a mouse click
+// gives it up, or the buttons would stay after the pointer left. A keyboard
+// press (detail 0) keeps it, to press again.
+function onFoldClick(net: Network, e: MouseEvent): void {
+  toggleFold(net);
+  if (e.detail > 0) (e.currentTarget as HTMLElement | null)?.blur();
+}
+// What each closed network shows, by network id. Absent = open.
+const closedViews = computed(() => {
+  const out = new Map<number, ReturnType<typeof closedNetworkView<Buffer>>>();
+  for (const net of networks.networks) {
+    if (isNetOpen(net.id)) continue;
+    out.set(
+      net.id,
+      closedNetworkView([...(pinnedBufsByNet[net.id] || []), ...unpinnedBufs(net.id)], {
+        count: displayCount,
+        countsAsUnread: (b) => b.unread > 0 && !isChannelMuted(b),
+        isActive: (b) => isActive(net.id, b.target),
+      }),
+    );
+  }
+  return out;
+});
+// The rows of the plain (undraggable) list under a network's header.
+function plainRows(networkId: number): Buffer[] {
+  return closedViews.value.get(networkId)?.rows ?? unpinnedBufs(networkId);
+}
+// The header's count: the server buffer's own, plus whatever a closed network
+// is not listing.
+function netHeadCount(networkId: number): number {
+  return (
+    countFor(serverUnread(networkId), serverHighlights(networkId)) +
+    (closedViews.value.get(networkId)?.hiddenCount ?? 0)
+  );
 }
 
 // Mirror pins.byNetwork into a local reactive map of concrete buffer objects.
@@ -759,6 +889,14 @@ function rowClasses(buf: Buffer, networkId: number): Record<string, boolean> {
   };
 }
 
+// A click on a network's header opens its server buffer, and always opens the
+// network for the visit: clicking a folded network is asking to see it, even
+// when you were already inside it with the visit ended by the chevron.
+function selectNetHead(net: Network): void {
+  visit.value = { open: net.id, last: net.id };
+  select(net.id, serverTarget(net.id));
+}
+
 function select(networkId: number, target: string): void {
   buffers.activate(networkId, target);
 }
@@ -807,7 +945,8 @@ function dmTitle(buf: Buffer): string | undefined {
 function netHeadClasses(networkId: number): Record<string, boolean> {
   return {
     active: isActive(networkId, serverTarget(networkId)),
-    unread: serverUnread(networkId) > 0,
+    // A closed network's header stands in for the rows it is not listing.
+    unread: serverUnread(networkId) > 0 || !!closedViews.value.get(networkId)?.hiddenUnread,
     highlighted: serverHighlights(networkId) > 0,
   };
 }
@@ -1071,6 +1210,13 @@ onBeforeUnmount(() => {
 .net + .net {
   border-top: 1px solid var(--border);
   margin-top: var(--space-2);
+}
+/* A network showing only its header (folded, or one with no
+   channels): the bottom padding is there to space the rows off the next rule,
+   and with no rows it leaves the header sitting high in its band. Without it
+   the next group's top margin matches the padding above the header. */
+.net:not(.system-net):not(:has(> .channels)) {
+  padding-bottom: 0;
 }
 /* The LURKER row is the sidebar's header — a real fixed header now (#411): it's
    a flex child of the frame that sits above the scroll region and never scrolls,

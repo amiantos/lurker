@@ -182,6 +182,9 @@ export const EXPORT_TABLES = Object.freeze({
       // Flood protection off is something the user asked for on a network that
       // exempts them (#1193); a restore keeps it.
       'flood_protection',
+      // Which networks the user folded away in the sidebar (#1432).
+      'collapsed',
+      'hide_muted',
     ],
   },
 

@@ -85,6 +85,11 @@ export interface Network {
    *  flood clock (#1193); 1 unless the user turned it off for a network whose
    *  server exempts them. Applies live: the connection reads it per line. */
   flood_protection: number;
+  /** Folded down to its header in the sidebar (#1432). View state only: 1 or 0.
+   *  Optional because nothing on the IRC side reads it, so a hand-built row
+   *  (the connection tests) need not carry it. */
+  collapsed?: number;
+  hide_muted?: number;
   created_at: string;
 }
 
@@ -288,6 +293,24 @@ export function setNetworkClientCert(
     'UPDATE networks SET client_cert = ?, client_key = ? WHERE id = ? AND user_id = ?',
   ).run(encryptSecret(pair ? pair.cert : null), encryptSecret(pair ? pair.key : null), id, userId);
   return getNetwork(id, userId);
+}
+
+/** Fold or unfold a network in the sidebar (#1432). False when it isn't theirs. */
+export function setNetworkCollapsed(id: number, userId: number, collapsed: boolean): boolean {
+  return (
+    db
+      .prepare('UPDATE networks SET collapsed = ? WHERE id = ? AND user_id = ?')
+      .run(collapsed ? 1 : 0, id, userId).changes > 0
+  );
+}
+
+/** Hide or show a network's muted channels in the sidebar (#1034). False when it isn't theirs. */
+export function setNetworkHideMuted(id: number, userId: number, hideMuted: boolean): boolean {
+  return (
+    db
+      .prepare('UPDATE networks SET hide_muted = ? WHERE id = ? AND user_id = ?')
+      .run(hideMuted ? 1 : 0, id, userId).changes > 0
+  );
 }
 
 /** Store the user modes replayed after registration (#1181), or clear them. */
