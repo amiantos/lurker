@@ -96,9 +96,9 @@ describe('BufferList row states', () => {
     expect(classesOf('#both')).toEqual(expect.arrayContaining(['muted', 'not-joined']));
   });
 
-  // Equal specificity, so the later rule wins: name, muted, not joined,
-  // unread, highlighted. happy-dom does not cascade, so the order is read.
-  it('ranks the colours: name, muted, not joined, unread, highlighted', () => {
+  // Equal specificity, so the later rule wins. happy-dom does not cascade, so
+  // the order is read.
+  it('ranks the colours: name, muted, away, offline, unread, highlighted', () => {
     const css = bufferListSource.split('<style scoped>')[1];
     const at = (rule: string) => {
       const i = css.indexOf(rule);
@@ -108,15 +108,16 @@ describe('BufferList row states', () => {
     const order = [
       '.channels li .label {\n  color: var(--buffer-name);',
       '.channels li.muted .label {\n  color: var(--buffer-muted);',
-      '.channels li.not-joined .label {\n  color: var(--buffer-offline);\n  font-style: italic;',
+      '.channels li.peer-away .label {\n  color: var(--fg-muted);',
+      // A not-joined channel and an offline DM peer: one rule, one colour.
+      '.channels li.not-joined .label,\n.channels li.peer-offline .label {\n  color: var(--buffer-offline);\n  font-style: italic;',
       '.channels li.unread .label {\n  color: var(--buffer-unread);',
       '.channels li.highlighted .label {\n  color: var(--buffer-highlight);',
     ].map(at);
     expect(order).toEqual([...order].toSorted((a, b) => a - b));
-    // An offline DM peer's row takes the same colour.
-    expect(css).toContain(
-      '.channels li.peer-offline .label {\n  color: var(--buffer-offline);\n  font-style: italic;',
-    );
+    // Nothing after them recolours a DM by its peer: unread shows on a DM as
+    // it does on a channel.
+    expect(css.slice(order[order.length - 1])).not.toMatch(/peer-(away|offline) \.label/);
     // The row itself is no longer faded: that took the tree guides with it.
     expect(css).not.toMatch(/\.channels li\.not-joined \{\s*opacity/);
   });
