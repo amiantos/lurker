@@ -80,6 +80,9 @@ describe('MessageList — the nick column in the stylesheet', () => {
     );
     // The mark is a character of the line, hidden until a cell is cut.
     expect(css).toContain('.prefix-more { display: none; }');
+    expect(css).toMatch(
+      /\.message-list\.nick-max:not\(\.compact\) \.line > \.prefix\[data-clipped\] > \.prefix-more \{ display: block; width: 1ch;/,
+    );
   });
 });
 
