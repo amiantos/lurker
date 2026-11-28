@@ -513,7 +513,7 @@ function openListMenu() {
   if (!el) return;
   const items = listBarMenuItems(
     {
-      sharesOff: auth.canUpload ? null : auth.uploadsOffTitle,
+      sharesOff: !auth.canUpload,
       dcc: dcc.entryShown,
       dccPending: dcc.pendingCount,
       admin: showAdminEntry.value,
