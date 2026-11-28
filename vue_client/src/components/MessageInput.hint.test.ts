@@ -13,6 +13,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { useViewport } from '../composables/useViewport.js';
 import MessageInput from './MessageInput.vue';
 
 vi.mock('../composables/useSocket.js', () => ({
@@ -66,6 +67,7 @@ describe('the /commands hint', () => {
   afterEach(() => {
     for (const w of mounted) w.unmount();
     mounted = [];
+    useViewport().isMobile.value = false;
   });
 
   it('shows until /commands has been run', async () => {
@@ -87,6 +89,29 @@ describe('the /commands hint', () => {
   // Before the settings land, "unset" also means "not fetched yet".
   it('stays out until the settings have loaded', async () => {
     expect((await composer()).placeholder).toBe('');
+  });
+
+  // Mobile channels carry the nick there and never showed the hint. The
+  // server buffer leads with the hint, then falls back to the nick like them.
+  it('on mobile, only the server buffer shows the hint, then the nick', async () => {
+    useViewport().isMobile.value = true;
+    const settings = useSettingsStore();
+    settings.loaded = true;
+    const el = await composer();
+    expect(el.placeholder).toBe('me');
+    useNetworksStore().activeKey = '1:::server:1';
+    await flush();
+    expect(el.placeholder).toBe('try /commands');
+    settings.values = { [SEEN]: true };
+    await flush();
+    expect(el.placeholder).toBe('me');
+  });
+
+  it('a /commands run before the settings load still sets the flag', async () => {
+    const settings = useSettingsStore();
+    const write = vi.spyOn(settings, 'setValue').mockResolvedValue();
+    await run(await composer(), '/commands');
+    expect(write.mock.calls).toEqual([[SEEN, true]]);
   });
 
   it('running /commands sets the flag, once', async () => {

@@ -35,6 +35,7 @@
       rows="1"
       :value="text"
       :placeholder="placeholder"
+      aria-label="Message"
       :disabled="(!active && !isSystemBuffer) || isPaused"
       :spellcheck="systemFeatures.spellcheck"
       :autocorrect="systemFeatures.autocorrect"
@@ -4623,8 +4624,9 @@ function handleCommand(
     case 'commands':
       for (const commandLine of helpLines()) localInfo(networkId, target, commandLine);
       // The input bar's "try /commands" has done its job (#1494). Best-effort:
-      // a failed write leaves the hint up until the next run.
-      if (settings.loaded && settings.effective(COMMANDS_SEEN_SETTING) !== true) {
+      // a failed write leaves the hint up until the next run. Not held for the
+      // settings to load: writing it twice is harmless, missing it is not.
+      if (settings.effective(COMMANDS_SEEN_SETTING) !== true) {
         settings.setValue(COMMANDS_SEEN_SETTING, true).catch(() => {});
       }
       return true;
