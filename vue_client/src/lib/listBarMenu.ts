@@ -11,7 +11,9 @@ import { ArchiveIcon, PlusIcon, ShareIcon, ShieldCogIcon } from '@lucide/vue';
 import type { ContextMenuItem } from '../composables/useContextMenu.js';
 
 export interface ListBarMenuState {
-  /** The DCC window has something to show (DccButton's own condition). */
+  /** Why shares are off for this account, when they are: said in the row. */
+  sharesOff?: string | null;
+  /** The way into the DCC window is offered (the dcc store's entryShown). */
   dcc: boolean;
   /** DCC offers waiting for an answer. */
   dccPending: number;
@@ -29,11 +31,19 @@ export function listBarMenuItems(
   state: ListBarMenuState,
   actions: ListBarMenuActions,
 ): ContextMenuItem[] {
-  const items: ContextMenuItem[] = [{ label: 'Shares', icon: ShareIcon, onClick: actions.shares }];
+  const items: ContextMenuItem[] = [
+    {
+      // The bar's icon said why in its tooltip; a row has only its label.
+      label: state.sharesOff ? `Shares — ${state.sharesOff}` : 'Shares',
+      icon: ShareIcon,
+      onClick: actions.shares,
+    },
+  ];
   if (state.dcc) {
     const n = state.dccPending;
     items.push({
       // The bar's DCC icon said this in its colour; a row can say it in words.
+      // The count is the one when the menu opened, as every row's label is.
       label: n > 0 ? `DCC — ${n} ${n === 1 ? 'offer' : 'offers'} waiting` : 'DCC',
       icon: ArchiveIcon,
       onClick: actions.dcc,

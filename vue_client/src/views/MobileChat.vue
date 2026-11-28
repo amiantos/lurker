@@ -32,7 +32,7 @@
         <button
           ref="listMenuBtn"
           class="icon"
-          :class="{ pending: dcc.pendingCount > 0 }"
+          :class="{ pending: dccWaiting > 0 }"
           :title="listMenuTitle"
           :aria-label="listMenuTitle"
           @click="openListMenu"
@@ -67,7 +67,8 @@
              the bar holds only buffer-scoped actions: search & highlights open
              pre-filtered to this buffer (in:<target> on:<network>), members
              toggles the roster, the rest folds into the kebab. The *global*
-             search / highlights / saved / uploads live on the list top bar. -->
+             search / highlights / saved live on the list top bar, and
+             shares in its menu. -->
         <span v-if="isServerBuffer || isVirtual" class="title">{{ bufferLabel }}</span>
         <span class="spacer"></span>
         <button
@@ -335,7 +336,7 @@ const route = useRoute();
 const auth = useAuthStore();
 const limits = reactive(useAccountLimits());
 
-// Admin panel entry in the mobile top bar.
+// Admin panel entry in the buffer-list bar's menu.
 const showAdminEntry = computed(() => auth.isAdmin);
 
 const hlChip = useHighlightChip();
@@ -500,8 +501,11 @@ function openAddNetwork() {
 
 // The buffer-list bar's own kebab (#1484): see lib/listBarMenu.
 const listMenuBtn = ref<HTMLElement | null>(null);
+// Offers waiting that the menu has a DCC row for: the kebab only points at
+// something inside it.
+const dccWaiting = computed(() => (dcc.entryShown ? dcc.pendingCount : 0));
 const listMenuTitle = computed(() => {
-  const n = dcc.pendingCount;
+  const n = dccWaiting.value;
   return n > 0 ? `More — ${n} DCC ${n === 1 ? 'offer' : 'offers'} waiting` : 'More';
 });
 function openListMenu() {
@@ -509,7 +513,8 @@ function openListMenu() {
   if (!el) return;
   const items = listBarMenuItems(
     {
-      dcc: dcc.hasDcc || dcc.panelOpen,
+      sharesOff: auth.canUpload ? null : auth.uploadsOffTitle,
+      dcc: dcc.entryShown,
       dccPending: dcc.pendingCount,
       admin: showAdminEntry.value,
     },

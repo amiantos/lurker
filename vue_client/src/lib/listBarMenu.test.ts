@@ -32,6 +32,17 @@ describe('the buffer-list bar menu (#1484)', () => {
     expect(labels({ dcc: true, dccPending: 3, admin: false })[1]).toBe('DCC — 3 offers waiting');
   });
 
+  it('says why shares are off, on the row that would open them', () => {
+    expect(
+      labels({
+        sharesOff: 'subscribe to upload files',
+        dcc: false,
+        dccPending: 0,
+        admin: false,
+      })[0],
+    ).toBe('Shares — subscribe to upload files');
+  });
+
   it('runs the action of the row that was picked', () => {
     const a = actions();
     const items = listBarMenuItems({ dcc: true, dccPending: 0, admin: true }, a);

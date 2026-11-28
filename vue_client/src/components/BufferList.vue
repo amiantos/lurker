@@ -326,7 +326,10 @@
           </ul>
         </div>
         <p v-if="!networks.networks.length" class="empty">
-          No networks yet — add one with the + button.
+          No networks yet —
+          <span class="empty-wide">add one with the + button.</span>
+          <!-- A phone has no + here: Add network is in the top bar's menu (#1484). -->
+          <span class="empty-phone">add one from the ⋮ menu.</span>
         </p>
       </nav>
       <button
@@ -1581,6 +1584,17 @@ onBeforeUnmount(() => {
   padding: var(--space-6);
   color: var(--fg-muted);
   font-style: italic;
+}
+.empty-phone {
+  display: none;
+}
+@media (max-width: 768px) {
+  .empty-wide {
+    display: none;
+  }
+  .empty-phone {
+    display: inline;
+  }
 }
 
 /* Separator between the pinned section and the auto-sorted section. The
