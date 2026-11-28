@@ -166,7 +166,7 @@ import { COLOR_VARS } from '../composables/useTheme.js';
 import { getOption } from '../../../shared/settingsRegistry.js';
 import { contrastRatio, formatRatio, harmonies, hsvToRgb, rgbToHsv, toHex } from '../lib/color.js';
 import type { HSV, RGB } from '../lib/color.js';
-import { resolveCssColor } from '../lib/cssColor.js';
+import { refersToVar, resolveCssColor } from '../lib/cssColor.js';
 
 const FAVORITES_KEY = 'look.color.favorites';
 const VAR_REF_RE = /^var\(\s*--[\w-]+\s*\)$/;
@@ -246,6 +246,7 @@ function refreshTheme(): void {
   const out: ThemeSwatch[] = [];
   const seen = new Set<string>();
   const targets = new Map<string, ThemeSwatch>();
+  const editedVar = props.settingKey ? COLOR_VARS[props.settingKey] : undefined;
   for (const [key, cssVar] of Object.entries(COLOR_VARS)) {
     const stored = String(settings.effective(key) ?? '');
     const resolved = resolveCssColor(stored, host);
@@ -258,9 +259,13 @@ function refreshTheme(): void {
     }
     // Never a key that may be empty (the own-message colour): its variable
     // goes when it is cleared, and a reference to it would go blank with it.
+    // And never one whose default points at the key being edited (the buffer
+    // list's colours default to var(--fg) and var(--fg-muted)): resetting it
+    // later would leave the two pointing at each other.
     if (
       key !== props.settingKey &&
       getOption(key)?.default !== '' &&
+      !refersToVar(getOption(key)?.default, editedVar) &&
       !VAR_REF_RE.test(stored.trim()) &&
       !targets.has(hex)
     ) {

@@ -84,3 +84,16 @@ export function themeColor(value: string | null | undefined): RGB | null {
   resolved.set(v, rgb);
   return rgb;
 }
+
+/**
+ * Whether `value` is exactly a reference to `cssVar`: `var(--fg)` for `--fg`.
+ * The colour picker asks it of a setting's DEFAULT before offering that
+ * setting as something another can point at: a key whose default points back
+ * at the one being edited would close a loop the day it is reset, and a
+ * variable in a loop is no colour at all.
+ */
+export function refersToVar(value: unknown, cssVar: string | undefined): boolean {
+  if (typeof value !== 'string' || !cssVar) return false;
+  const m = /^var\(\s*(--[\w-]+)\s*\)$/.exec(value.trim());
+  return !!m && m[1] === cssVar;
+}

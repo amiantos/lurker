@@ -879,13 +879,16 @@ function onRowActionsClick(e: MouseEvent, buf: Buffer): void {
 }
 
 function rowClasses(buf: Buffer, networkId: number): Record<string, boolean> {
+  const muted = isChannelMuted(buf);
   return {
     active: isActive(networkId, buf.target),
     // Muted channels withhold the plain-unread cue (color/bold/edge arrow all
     // key off this class). `highlighted` is left untouched so mentions still
     // light the row up in the highlight color.
-    unread: buf.unread > 0 && !isChannelMuted(buf),
+    unread: buf.unread > 0 && !muted,
     highlighted: buf.highlighted > 0,
+    // The resting states (#1433), each with a colour of its own.
+    muted,
     'not-joined': isUnjoined(buf, networkId),
     'peer-away': isPeerAway(buf),
     'peer-offline': isPeerOffline(buf),
@@ -1386,9 +1389,11 @@ onBeforeUnmount(() => {
   }
 }
 
+/* Every header's name: a network's, the Friends and Favorites headings, and
+   LURKER at the top. One themed colour (#1433); a header's state is its dot. */
 .name {
   flex: 1;
-  color: var(--fg);
+  color: var(--buffer-header);
   /* Ellipsize like .label so a long network name clips instead of wrapping the
      row to two lines or running under the revealed + / kebab glyphs. min-width:0
      lets the flex item shrink below its content width so the ellipsis engages. */
@@ -1476,6 +1481,29 @@ onBeforeUnmount(() => {
   background: var(--bg-soft);
   border-left-color: var(--accent);
 }
+/* A row's name at rest, then the states that recolour it (#1433), each a
+   themed colour. Later rules win, so the order is the precedence: a muted
+   row, an away DM peer, an offline row, then anything new in the row. A DM
+   and a channel rank the same: unread and highlight show over all of them. */
+.channels li .label {
+  color: var(--buffer-name);
+}
+.channels li.muted .label {
+  color: var(--buffer-muted);
+}
+/* DM peer away: muted gray, matching away members in the channel nicklist. */
+.channels li.peer-away .label {
+  color: var(--fg-muted);
+}
+/* Offline: a parted or disconnected channel is a history view rather than a
+   live buffer, and a DM peer who is offline is not there to answer. One
+   colour for both, and italics, which stay under an unread colour. The label
+   alone, not the row: fading the row faded its tree guides too. */
+.channels li.not-joined .label,
+.channels li.peer-offline .label {
+  color: var(--buffer-offline);
+  font-style: italic;
+}
 .channels li.unread .label {
   color: var(--buffer-unread);
 }
@@ -1487,22 +1515,6 @@ onBeforeUnmount(() => {
 .buffer-list.unread-bold .channels li.unread .label,
 .buffer-list.unread-bold .channels li.highlighted .label {
   font-weight: 600;
-}
-/* Parted/disconnected channels render as a history view rather than a live
-   buffer. Apply opacity to the whole row so badges, labels, and tree guides
-   all dim together; unread/highlight colors still come through. */
-.channels li.not-joined {
-  opacity: 0.5;
-}
-/* DM peer state. Both away and offline render in muted gray (matching
-   away members in the channel nicklist); offline is additionally italicized,
-   which is the offline tell. */
-.channels li.peer-away .label,
-.channels li.peer-offline .label {
-  color: var(--fg-muted);
-}
-.channels li.peer-offline .label {
-  font-style: italic;
 }
 .label {
   flex: 1;

@@ -80,6 +80,27 @@ describe('useTheme — compact density variables', () => {
     expect(read('--nick-col-max')).toBe('16ch');
   });
 
+  // #1433: the buffer list's resting colours, each a setting of its own.
+  it('writes the buffer list colours, following the palette by default', async () => {
+    useSettingsStore().values = {} as never;
+    await nextTick();
+    expect(read('--buffer-header')).toBe('var(--fg)');
+    expect(read('--buffer-name')).toBe('var(--fg)');
+    expect(read('--buffer-muted')).toBe('var(--fg-muted)');
+    expect(read('--buffer-offline')).toBe('var(--fg-muted)');
+    useSettingsStore().values = {
+      'look.color.buffer.header': '#ab9df2',
+      'look.color.buffer.name': '#78dce8',
+      'look.color.buffer.muted': '#727072',
+      'look.color.buffer.offline': '#ff6188',
+    } as never;
+    await nextTick();
+    expect(read('--buffer-header')).toBe('#ab9df2');
+    expect(read('--buffer-name')).toBe('#78dce8');
+    expect(read('--buffer-muted')).toBe('#727072');
+    expect(read('--buffer-offline')).toBe('#ff6188');
+  });
+
   it('a reset falls back to the default without a stale override lingering', async () => {
     useSettingsStore().values = {} as never;
     await nextTick();

@@ -728,6 +728,54 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     default: 'var(--warn)',
     description: 'Rows with highlights.',
   },
+  // The resting colours (#1433): one for the list's headers, whose state is
+  // their dot's to show, and three for its rows. An unread or highlighted row
+  // takes its own colour over all three; a row that is both muted and offline
+  // is drawn as offline.
+  {
+    key: 'look.color.buffer.header',
+    label: 'Header color',
+    category: 'appearance',
+    group: 'buffer-list',
+    themed: true,
+    type: 'color',
+    default: 'var(--fg)',
+    description:
+      'Network names, the Friends and Favorites headings, and the Lurker header at ' +
+      'the top of the list.',
+  },
+  {
+    key: 'look.color.buffer.name',
+    label: 'Buffer name color',
+    category: 'appearance',
+    group: 'buffer-list',
+    themed: true,
+    type: 'color',
+    default: 'var(--fg)',
+    description: 'Channel and DM names with nothing new in them.',
+  },
+  {
+    key: 'look.color.buffer.muted',
+    label: 'Muted row color',
+    category: 'appearance',
+    group: 'buffer-list',
+    themed: true,
+    type: 'color',
+    default: 'var(--fg-muted)',
+    description: 'Channels and DMs you have muted.',
+  },
+  {
+    key: 'look.color.buffer.offline',
+    label: 'Offline row color',
+    category: 'appearance',
+    group: 'buffer-list',
+    themed: true,
+    type: 'color',
+    default: 'var(--fg-muted)',
+    description:
+      'Channels you are not in or whose network is disconnected, and DMs with ' +
+      'someone who is offline. These rows are also in italics.',
+  },
   {
     key: 'look.buffer_list.unread_bold',
     label: 'Bold unread rows',
