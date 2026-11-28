@@ -22,29 +22,23 @@
         <button class="icon" title="Saved messages" @click="showBookmarks = true">
           <BookmarkIcon />
         </button>
-        <button
-          class="icon"
-          :title="auth.canUpload ? 'Shares' : auth.uploadsOffTitle"
-          @click="auth.canUpload ? (showUploads = true) : limits.open()"
-        >
-          <ShareIcon />
-        </button>
-        <DccButton class="icon" />
-        <button class="icon" title="Add network" @click="openAddNetwork">
-          <PlusIcon />
-        </button>
-        <RouterLink
-          v-if="showAdminEntry"
-          class="icon"
-          to="/admin"
-          title="Admin panel"
-          aria-label="Admin panel"
-        >
-          <ShieldCogIcon />
-        </RouterLink>
         <RouterLink class="icon" to="/settings" title="Settings">
           <SettingsIcon />
         </RouterLink>
+        <!-- The rest (shares, DCC, add network, the admin panel) fold into
+             this menu: all of them on the bar are wider than a phone (#1484).
+             It takes the DCC icon's warn colour while an offer waits, since
+             the icon that showed it is inside. -->
+        <button
+          ref="listMenuBtn"
+          class="icon"
+          :class="{ pending: dcc.pendingCount > 0 }"
+          :title="listMenuTitle"
+          :aria-label="listMenuTitle"
+          @click="openListMenu"
+        >
+          <EllipsisVerticalIcon />
+        </button>
       </header>
       <div class="bufferlist-wrap" @click="onBufferListClick">
         <BufferList no-fold />
@@ -294,7 +288,6 @@ import JoinChannelModal from '../components/JoinChannelModal.vue';
 import RecentUploadsModal from '../components/RecentUploadsModal.vue';
 import AccountLimitsModal from '../components/AccountLimitsModal.vue';
 import { useAccountLimits } from '../composables/useAccountLimits.js';
-import DccButton from '../components/DccButton.vue';
 import SearchModal from '../components/SearchModal.vue';
 import NickNoteModal from '../components/NickNoteModal.vue';
 import ReactModal from '../components/ReactModal.vue';
@@ -320,6 +313,7 @@ import { useHighlightChip } from '../composables/useHighlightChip.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useAuthStore } from '../stores/auth.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
+import { listBarMenuItems } from '../lib/listBarMenu.js';
 import {
   ArrowLeftIcon,
   BellIcon,
@@ -330,8 +324,6 @@ import {
   PlusIcon,
   SearchIcon,
   SettingsIcon,
-  ShareIcon,
-  ShieldCogIcon,
   UserPenIcon,
   UsersIcon,
 } from '@lucide/vue';
@@ -504,6 +496,32 @@ function openBufferActions() {
 
 function openAddNetwork() {
   networkEditor.open();
+}
+
+// The buffer-list bar's own kebab (#1484): see lib/listBarMenu.
+const listMenuBtn = ref<HTMLElement | null>(null);
+const listMenuTitle = computed(() => {
+  const n = dcc.pendingCount;
+  return n > 0 ? `More — ${n} DCC ${n === 1 ? 'offer' : 'offers'} waiting` : 'More';
+});
+function openListMenu() {
+  const el = listMenuBtn.value;
+  if (!el) return;
+  const items = listBarMenuItems(
+    {
+      dcc: dcc.hasDcc || dcc.panelOpen,
+      dccPending: dcc.pendingCount,
+      admin: showAdminEntry.value,
+    },
+    {
+      shares: () => (auth.canUpload ? (showUploads.value = true) : limits.open()),
+      dcc: () => dcc.open(),
+      addNetwork: openAddNetwork,
+      admin: () => void router.push('/admin'),
+    },
+  );
+  const rect = el.getBoundingClientRect();
+  menu.open(items, rect.left, rect.bottom + 2, el);
 }
 
 function editNetwork(net: Network | undefined) {
@@ -694,6 +712,12 @@ useChatBootstrap({ onJump: onJumpToMessage });
 }
 .icon:hover {
   color: var(--fg);
+}
+/* The list bar's kebab while a DCC offer waits inside it: the DCC button's
+   own signal (DccButton.vue), held under the pointer too. */
+.icon.pending,
+.icon.pending:hover {
+  color: var(--warn);
 }
 /* Disabled top-bar icon (e.g. Join channel while the network is disconnected):
    dimmed and non-interactive, and it must not brighten on hover. */
