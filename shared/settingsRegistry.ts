@@ -773,8 +773,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'color',
     default: 'var(--fg-muted)',
     description:
-      'Channels you are not in or whose network is disconnected, and DMs with ' +
-      'someone who is offline. These rows are also in italics.',
+      'Channels you are not in or whose network is disconnected, DMs with ' +
+      'someone who is offline, and DCC chats that are not connected. These rows ' +
+      'are also in italics.',
   },
   {
     key: 'look.buffer_list.unread_bold',

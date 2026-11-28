@@ -949,7 +949,7 @@ function isDccChatClosed(buf: Buffer): boolean {
   return !networks.isDccChatLive(buf.networkId, buf.target);
 }
 function dmTitle(buf: Buffer): string | undefined {
-  if (isDccChatClosed(buf)) return `DCC chat with ${dccChatPeer(buf.target)} is closed`;
+  if (isDccChatClosed(buf)) return `DCC chat with ${dccChatPeer(buf.target)} is not connected`;
   if (!isDmBuffer(buf)) return undefined;
   if (isPeerOffline(buf)) return `${buf.target} is offline`;
   if (isPeerAway(buf)) return `${buf.target} is away`;
