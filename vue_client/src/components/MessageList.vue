@@ -187,8 +187,10 @@
             :class="prefixClass(row.m)"
             :style="row.continuationAuthor || row.m?.type === 'message' ? null : prefixStyle(row.m)"
             ><!-- The cell's text in a box of its own, so a maximum nick column
-                 (#1405) can cut it short and leave the cell's padding for the
-                 mark that says so. --><span class="prefix-text"
+                 (#1405) can cut it short. The `+` after it is the mark that
+                 says so: a character of its own, shown on the cells that
+                 were cut, in the last of the characters they are allowed. --><span
+              class="prefix-text"
               ><template v-if="row.m?.type === 'message' && !row.continuationAuthor"
                 ><NickRef
                   :nick="row.m?.nick ?? ''"
@@ -201,7 +203,7 @@
               ><template v-else>{{
                 row.continuationAuthor ? '' : prefixText(row.m)
               }}</template></span
-            ></span
+            ><span v-if="nickColumnMax > 0" class="prefix-more" aria-hidden="true">+</span></span
           >
         </template>
         <!-- One body for both layouts: the per-type chain below is the only
@@ -718,7 +720,7 @@ const nickColumnMin = computed(
   () => Number(settings.effective('look.message.traditional.nick_column_min')) || 0,
 );
 
-// Mark the cells whose text the maximum cut short, for the stylesheet's `+`.
+// Mark the cells whose text the maximum cut short, so each shows its `+`.
 // Only layout knows which those are: a display name, a mode glyph and the
 // font all change how wide a nick draws. Every read before any write, so the
 // pass costs one layout however many rows are loaded.
@@ -726,7 +728,14 @@ function markClippedNicks() {
   const el = scroller.value;
   if (!el || compactMode.value || nickColumnMax.value <= 0) return;
   const texts = Array.from(el.querySelectorAll<HTMLElement>('.line > .prefix > .prefix-text'));
-  const clipped = texts.map((text) => text.scrollWidth > text.clientWidth);
+  // A cut cell's text has already given a character up to its `+`, so what it
+  // is measured against is the room both have together. Measured against its
+  // own box, a name that came to fit exactly would stay cut forever.
+  const clipped = texts.map((text) => {
+    const more = text.nextElementSibling as HTMLElement | null;
+    const room = text.clientWidth + (more ? more.offsetWidth : 0);
+    return text.scrollWidth > room;
+  });
   texts.forEach((text, i) => {
     const cell = text.parentElement;
     if (!cell || 'clipped' in cell.dataset === clipped[i]) return;
@@ -3337,23 +3346,32 @@ watch(
   font-style: italic;
 }
 /* A maximum nick column (look.message.traditional.nick_column_max): a cell's
-   text is cut at that many characters, and a `+` in the cell's padding says
-   so, as WeeChat's prefix_align_max does. Which cells were cut is layout's to
-   say (markClippedNicks). Scoped to .nick-max so a reader with no maximum
-   gets none of this. */
+   nick longer than that many characters is cut one short of it and a `+`
+   takes the last, so a cut cell is exactly the maximum wide and keeps its
+   padding. The `+` is a character in the line, not a decoration over it.
+   Which cells were cut is layout's to say (markClippedNicks). Scoped to
+   .nick-max so a reader with no maximum gets none of this. */
+.prefix-more {
+  display: none;
+}
 .message-list.nick-max:not(.compact) .line > .prefix {
-  position: relative;
+  display: flex;
+  align-items: baseline;
 }
 .message-list.nick-max:not(.compact) .line > .prefix > .prefix-text {
-  display: block;
+  min-width: 0;
   max-width: var(--nick-col-max, none);
   overflow: hidden;
 }
-.message-list.nick-max:not(.compact) .line > .prefix[data-clipped]::after {
-  content: '+';
-  position: absolute;
-  right: 0;
+.message-list.nick-max:not(.compact) .line > .prefix[data-clipped] > .prefix-text {
+  max-width: calc(var(--nick-col-max) - 1ch);
+}
+.message-list.nick-max:not(.compact) .line > .prefix[data-clipped] > .prefix-more {
+  display: block;
+  width: 1ch;
   color: var(--fg-muted);
+  /* Not part of the nick: copying the cell copies the name alone. */
+  user-select: none;
 }
 .prefix.action-marker {
   color: var(--fg-muted);

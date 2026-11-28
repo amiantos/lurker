@@ -72,8 +72,14 @@ describe('MessageList — the nick column in the stylesheet', () => {
 
   it("cuts a cell at the reader's maximum only while one is set", () => {
     expect(css).toContain(
-      '.message-list.nick-max:not(.compact) .line > .prefix > .prefix-text { display: block; max-width: var(--nick-col-max, none); overflow: hidden; }',
+      '.message-list.nick-max:not(.compact) .line > .prefix > .prefix-text { min-width: 0; max-width: var(--nick-col-max, none); overflow: hidden; }',
     );
+    // A cut nick gives its last character to the `+`, and keeps its padding.
+    expect(css).toContain(
+      '.message-list.nick-max:not(.compact) .line > .prefix[data-clipped] > .prefix-text { max-width: calc(var(--nick-col-max) - 1ch); }',
+    );
+    // The mark is a character of the line, hidden until a cell is cut.
+    expect(css).toContain('.prefix-more { display: none; }');
   });
 });
 
@@ -190,13 +196,23 @@ describe('MessageList — the nick column', () => {
   });
 
   describe('with a maximum set', () => {
-    // The stubbed layout: a cell is cut when its nick is longer than 6.
+    // The stubbed layout, 10px a character and a maximum of 6: a nick's box
+    // is as wide as the nick up to the maximum, and one character less once
+    // it is cut, the `+` beside it taking that character.
     function stubWidths(w: VueWrapper) {
       for (const text of w.findAll('.line > .prefix > .prefix-text')) {
         const el = text.element as HTMLElement;
-        Object.defineProperty(el, 'clientWidth', { get: () => 60, configurable: true });
-        Object.defineProperty(el, 'scrollWidth', {
-          get: () => (el.textContent ?? '').length * 10,
+        const cell = el.parentElement as HTMLElement;
+        const more = el.nextElementSibling as HTMLElement;
+        const cut = () => 'clipped' in cell.dataset;
+        const natural = () => (el.textContent ?? '').length * 10;
+        Object.defineProperty(el, 'scrollWidth', { get: natural, configurable: true });
+        Object.defineProperty(el, 'clientWidth', {
+          get: () => Math.min(natural(), cut() ? 50 : 60),
+          configurable: true,
+        });
+        Object.defineProperty(more, 'offsetWidth', {
+          get: () => (cut() ? 10 : 0),
           configurable: true,
         });
       }
@@ -216,6 +232,28 @@ describe('MessageList — the nick column', () => {
       await w.vm.$nextTick();
       expect(marked(w, 1)).toBe(false);
       expect(marked(w, 2)).toBe(true);
+      // Every cell carries the mark's character; the stylesheet shows it on
+      // the cut ones.
+      expect(w.find('[data-msg-id="2"] > .prefix > .prefix-more').text()).toBe('+');
+    });
+
+    it('lets go of a cut nick that comes to fit exactly', async () => {
+      useSettingsStore().values['look.message.traditional.nick_column_max'] = 6;
+      const long = line('sevench');
+      const b = open('#chan', 9, [long]);
+      const w = (wrapper = mount(MessageList, { attachTo: document.body }));
+      await w.vm.$nextTick();
+      stubWidths(w);
+      b.messages = [...b.messages, line('bob')] as never;
+      await w.vm.$nextTick();
+      expect(marked(w, long.id)).toBe(true);
+
+      // Six characters now: exactly the maximum, so nothing is cut.
+      (w.find(`[data-msg-id="${long.id}"] .prefix-text`).element as HTMLElement).textContent =
+        'sixchr';
+      b.messages = [...b.messages, line('carol')] as never;
+      await w.vm.$nextTick();
+      expect(marked(w, long.id)).toBe(false);
     });
 
     it('marks nothing, and measures the column again, once the maximum is lifted', async () => {
@@ -232,6 +270,7 @@ describe('MessageList — the nick column', () => {
       await w.vm.$nextTick();
       await w.vm.$nextTick();
       expect(w.find('.message-list').classes()).not.toContain('nick-max');
+      expect(w.find('.prefix-more').exists()).toBe(false);
       expect(floor(w)).toBe('140px');
     });
   });

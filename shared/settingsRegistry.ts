@@ -550,7 +550,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     default: 0,
     description:
       'Widest the nick column gets in the traditional layout, in characters. A ' +
-      'longer nick is cut short and marked with a +. 0 is no limit. Set both to ' +
+      'longer nick is cut short and ends in a +. 0 is no limit. Set both to ' +
       'the same number for a fixed column.',
   },
 
