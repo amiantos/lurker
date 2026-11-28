@@ -67,11 +67,28 @@ describe('ContextMenu touch dismissal', () => {
     expect(touchEnd(elsewhere)).toBe(false);
   });
 
-  it('a touch on the opening trigger is left to its own click', async () => {
+  // A message's trigger is its whole row; a nick or link inside it acts on its
+  // own click, so the row gets no pass.
+  it('a touch on the opening trigger closes and is swallowed too', async () => {
     await openMenu();
     pointerDown(trigger, 'touch');
+    expect(menu.state.open).toBe(false);
+    expect(touchEnd(trigger)).toBe(true);
+  });
+
+  it('a mouse press on the opening trigger is left to its own click', async () => {
+    await openMenu();
+    pointerDown(trigger, 'mouse');
     expect(menu.state.open).toBe(true);
-    expect(touchEnd(trigger)).toBe(false);
+  });
+
+  // The touched node left the DOM mid-press, so its touchend never reached
+  // window. The next gesture must not inherit the swallow.
+  it('a tap whose touchend went missing does not eat the next tap', async () => {
+    await openMenu();
+    pointerDown(elsewhere, 'touch');
+    pointerDown(elsewhere, 'touch');
+    expect(touchEnd(elsewhere)).toBe(false);
   });
 
   it('a touch inside the menu is not swallowed', async () => {

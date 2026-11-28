@@ -35,7 +35,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.js';
 
 const menu = useContextMenu();
@@ -80,18 +80,6 @@ function activate(item: ContextMenuItem): void {
   }
 }
 
-function onWindowPointerDown(e: PointerEvent): void {
-  if (!state.open) return;
-  if (menuEl.value && menuEl.value.contains(e.target as Node)) return;
-  // Leave a pointerdown on the opening trigger alone: its own click handler
-  // fires next and re-calls open() with the same triggerEl, which toggles the
-  // menu closed (see useContextMenu). Closing here would race that click and
-  // reopen the menu — pointerdown can't cancel the click that follows.
-  if (state.triggerEl && state.triggerEl.contains(e.target as Node)) return;
-  menu.close();
-  if (e.pointerType === 'touch') swallowTap();
-}
-
 // On touch, the tap that dismisses the menu does nothing else (#1492): without
 // this the same tap's click reaches whatever is under the finger, so tapping a
 // second message closed one menu and opened the next, and there was no way to
@@ -100,20 +88,33 @@ function onWindowPointerDown(e: PointerEvent): void {
 // listener would be too late for the focus. A drag ends in a touchend that
 // can't be cancelled and has no click behind it, so scrolling is unaffected.
 // Mouse and pen never arm this: a click outside acts as it always has.
-let disarmSwallow: (() => void) | null = null;
-function swallowTap(): void {
-  disarmSwallow?.();
-  const onEnd = (e: TouchEvent): void => {
-    if (e.type === 'touchend' && e.cancelable) e.preventDefault();
-    disarmSwallow?.();
-  };
-  window.addEventListener('touchend', onEnd, { capture: true, passive: false });
-  window.addEventListener('touchcancel', onEnd, true);
-  disarmSwallow = () => {
-    window.removeEventListener('touchend', onEnd, true);
-    window.removeEventListener('touchcancel', onEnd, true);
-    disarmSwallow = null;
-  };
+let swallowTap = false;
+
+function onWindowPointerDown(e: PointerEvent): void {
+  // A new gesture: whatever the last one armed is stale. Its touchend can go
+  // missing (the touched node left the DOM mid-press, so the event never
+  // reached window), and the swallow must not wait for some later tap.
+  swallowTap = false;
+  if (!state.open) return;
+  if (menuEl.value && menuEl.value.contains(e.target as Node)) return;
+  if (e.pointerType === 'touch') {
+    // The opening trigger is not spared: a message's trigger is its whole row,
+    // and the nicks, links and chips inside it act on their own click.
+    menu.close();
+    swallowTap = true;
+    return;
+  }
+  // Leave a pointerdown on the opening trigger alone: its own click handler
+  // fires next and re-calls open() with the same triggerEl, which toggles the
+  // menu closed (see useContextMenu). Closing here would race that click and
+  // reopen the menu — a mouse pointerdown can't cancel the click that follows.
+  if (state.triggerEl && state.triggerEl.contains(e.target as Node)) return;
+  menu.close();
+}
+function onWindowTouchEnd(e: TouchEvent): void {
+  if (!swallowTap) return;
+  swallowTap = false;
+  if (e.type === 'touchend' && e.cancelable) e.preventDefault();
 }
 function onWindowKey(e: KeyboardEvent): void {
   if (state.open && e.key === 'Escape') menu.close();
@@ -138,8 +139,12 @@ function onWindowResize(): void {
   if (state.open) menu.close();
 }
 
-// Attaching listeners only while open avoids paying for them on every scroll
-// during typical app use. Capture-phase pointerdown — not mousedown — so the
+// The scroll, key and resize listeners attach only while open, which avoids
+// paying for them on every scroll during typical app use. The pointerdown and
+// touch-end ones stay for the component's life: the swallow outlives the menu
+// it closed, and WebKit settles whether a touchend can be cancelled when the
+// touch starts, so a listener added mid-gesture may come too late.
+// Capture-phase pointerdown — not mousedown — so the
 // "tap a different message row" case still closes the menu on iOS: in the
 // sticky-:hover mode that powers the row → dots → menu UX, a tap on a new
 // row often doesn't synthesize a mousedown at the document level (iOS
@@ -150,13 +155,11 @@ watch(
   () => state.open,
   (isOpen) => {
     if (isOpen) {
-      window.addEventListener('pointerdown', onWindowPointerDown, true);
       window.addEventListener('keydown', onWindowKey);
       window.addEventListener('resize', onWindowResize);
       window.addEventListener('wheel', onWindowUserScroll, { capture: true, passive: true });
       window.addEventListener('touchmove', onWindowUserScroll, { capture: true, passive: true });
     } else {
-      window.removeEventListener('pointerdown', onWindowPointerDown, true);
       window.removeEventListener('keydown', onWindowKey);
       window.removeEventListener('resize', onWindowResize);
       window.removeEventListener('wheel', onWindowUserScroll, true);
@@ -165,9 +168,16 @@ watch(
   },
 );
 
+onMounted(() => {
+  window.addEventListener('pointerdown', onWindowPointerDown, true);
+  window.addEventListener('touchend', onWindowTouchEnd, { capture: true, passive: false });
+  window.addEventListener('touchcancel', onWindowTouchEnd, true);
+});
+
 onBeforeUnmount(() => {
-  disarmSwallow?.();
   window.removeEventListener('pointerdown', onWindowPointerDown, true);
+  window.removeEventListener('touchend', onWindowTouchEnd, true);
+  window.removeEventListener('touchcancel', onWindowTouchEnd, true);
   window.removeEventListener('keydown', onWindowKey);
   window.removeEventListener('resize', onWindowResize);
   window.removeEventListener('wheel', onWindowUserScroll, true);
