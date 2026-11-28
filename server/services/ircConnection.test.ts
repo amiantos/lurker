@@ -1467,6 +1467,58 @@ describe('refused-message handler routing (#283)', () => {
     expect(publish).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'motd' }));
   });
 
+  // The user's own WHOIS is the profile's. Its lines stay out of the server
+  // buffer, and one irc-framework has no field for rides the whois_result.
+  function whoisLinesFor(lines: string[], ask: string | null) {
+    const conn = makeConn();
+    const results: Array<Record<string, unknown>> = [];
+    conn.publishEphemeral = (event) => {
+      if (event.type === 'whois_result') results.push(event.whois as Record<string, unknown>);
+    };
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+    conn.client.raw = vi.fn<(line: string) => void>(); // don't touch a real socket
+    conn.state = 'connected';
+    if (ask) conn.raw(ask);
+    for (const line of lines) emitRaw(conn, line);
+    const said = () =>
+      publish.mock.calls
+        .map(([e]) => e as { type?: string; text?: string })
+        .filter((e) => e.type === 'motd')
+        .map((e) => e.text);
+    return { conn, results, said };
+  }
+  const WHOIS_ALICE = [
+    ':irc.example.test 311 nick Alice ~a host.test * :Alice Example',
+    ':irc.example.test 343 nick Alice 2 :is logged in from sessions',
+    ':irc.example.test 320 nick Alice :is a Network Helper',
+    ':irc.example.test 318 nick Alice :End of /WHOIS list.',
+  ];
+
+  it('keeps a WHOIS the user asked for out of the server buffer', () => {
+    const { conn, results, said } = whoisLinesFor(WHOIS_ALICE, 'WHOIS alice');
+    expect(said()).toEqual([]);
+    // irc-framework's own event, as it emits it at the 318.
+    conn.client.emit('whois', { nick: 'Alice', ident: '~a' });
+    expect(results).toEqual([
+      { nick: 'Alice', ident: '~a', other: ['2 is logged in from sessions'] },
+    ]);
+    // Taken once: the next WHOIS of the same nick starts clean.
+    conn.client.emit('whois', { nick: 'Alice' });
+    expect(results[1]).toEqual({ nick: 'Alice' });
+  });
+
+  it('still says a WHOIS miss, without its end line', () => {
+    const miss = whoisLinesFor(
+      [
+        ':irc.example.test 401 nick ghost :No such nick/channel',
+        ':irc.example.test 318 nick ghost :End of /WHOIS list.',
+      ],
+      'WHOIS ghost',
+    );
+    expect(miss.said()).toEqual(['ghost No such nick/channel']);
+  });
+
   it('leaves a topic for a channel we are not in to the server buffer', () => {
     const { said, publish } = topicLinesFor(
       [':irc.example.test 332 nick #elsewhere :Their topic'],

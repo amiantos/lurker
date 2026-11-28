@@ -100,6 +100,12 @@
             <dt>Signed on</dt>
             <dd>{{ signonLabel }}</dd>
           </template>
+          <template v-if="alsoLines.length">
+            <dt>Also</dt>
+            <dd class="also">
+              <span v-for="(line, i) in alsoLines" :key="i">{{ line }}</span>
+            </dd>
+          </template>
           <template v-if="channelsList.length">
             <dt>Channels</dt>
             <dd class="channels">
@@ -349,6 +355,26 @@ const chips = computed<Chip[]>(() => {
   return out;
 });
 
+// What the server says of them that has no row of its own, in its own words:
+// user modes, certificate fingerprints, the "special" lines, country, ASN, and
+// any line an ircd adds that irc-framework has no field for (`other`). These
+// used to be read off the raw lines in the server buffer, which no longer
+// carries the user's own WHOIS.
+const alsoLines = computed<string[]>(() => {
+  const w = whois.value;
+  if (!w) return [];
+  const list = (v: unknown): string[] =>
+    (Array.isArray(v) ? v : v ? [v] : []).map((x) => String(x).trim()).filter(Boolean);
+  return [
+    ...list(w.modes),
+    ...list(w.certfps ?? w.certfp),
+    ...list(w.special),
+    ...list(w.country),
+    ...list(w.asn),
+    ...list(w.other),
+  ];
+});
+
 const idleLabel = computed(() => {
   const idle = whois.value?.idle;
   if (idle == null) return '';
@@ -432,6 +458,7 @@ const hasDetails = computed(
         whois.value.server ||
         idleLabel.value ||
         signonLabel.value ||
+        alsoLines.value.length ||
         channelsList.value.length)
     ),
 );
@@ -643,6 +670,11 @@ code {
   color: var(--warn);
 }
 
+.also {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
 .channels {
   display: flex;
   flex-wrap: wrap;

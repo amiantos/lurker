@@ -355,6 +355,12 @@ export class ReplyRouter {
    * returned, by a caller that says "the list is empty" (#315).
    */
   endedEmpty = false;
+  /**
+   * Whether the line just given to noteServerLine is part of a WHOIS reply, its
+   * end included. Read beside the owner, by a caller that keeps the user's own
+   * WHOIS out of the server buffer.
+   */
+  lineInWhois = false;
   // Batches whose query timed out before they closed, by reference, with the
   // asker: a late line inside one is still that asker's (a history page's
   // lines must never become someone's live traffic), until its BATCH -.
@@ -406,13 +412,18 @@ export class ReplyRouter {
     // the lines tagged with ITS batch, not whatever arrives while it's open.
     this.lineBatch = batchTagOf(line);
     this.endedEmpty = false;
+    this.lineInWhois = false;
     let owner: ReplyOwner | undefined;
     // This is the line the last query's end was waiting on, or the wait is over.
     const settle = this.settle;
     if (settle) {
       if (settle.timer) clearTimeout(settle.timer);
       this.settle = null;
-      if (this.settles(settle, command, params)) owner = settle.query.asker ?? 'nobody';
+      if (this.settles(settle, command, params)) {
+        owner = settle.query.asker ?? 'nobody';
+        // The 318 that follows a WHOIS's 401.
+        if (settle.query.form === 'whois') this.lineInWhois = true;
+      }
     }
     owner ??= this.claimOrphan(command, params);
     owner ??= this.claim(command, params);
@@ -634,6 +645,7 @@ export class ReplyRouter {
       if (!role) continue;
       query.heardAt = Date.now();
       if (role === 'end' && !query.started) this.endedEmpty = true;
+      if (query.form === 'whois') this.lineInWhois = true;
       query.started = true;
       if (role === 'end') {
         this.finish(

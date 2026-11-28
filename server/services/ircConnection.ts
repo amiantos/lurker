@@ -1421,6 +1421,9 @@ export class IrcConnection {
   // grafts them onto the first fragment. Consumed on first fragment; cleared on
   // socket close with multilineBatches so an unopened batch can't leak.
   multilineBatchTags: Map<string, { time?: string; msgid?: string; reply?: string }>;
+  // Lines of a WHOIS the user asked for that irc-framework has no field for,
+  // by folded nick, until its 318: they ride the whois_result as `other`.
+  whoisOther = new Map<string, string[]>();
   // The caller-ID accept list being read back (#206): nicks from each
   // RPL_ACCEPTLIST (281), said once at RPL_ENDOFACCEPT (282). Cleared on
   // socket close, so a 281 with no end can't carry into the next connection.
@@ -2609,13 +2612,20 @@ export class IrcConnection {
       // RPL_AWAY for a message sent to someone away: one per message, and the
       // DM already shows that they are away and why (the 'away' handler keeps
       // the message). Only for a peer whose presence is kept: the 301 a /ctcp
-      // or an INVITE draws from anyone else has nowhere else to be read. The
-      // 301 inside a WHOIS the user asked for is part of its reply and stays.
+      // or an INVITE draws from anyone else has nowhere else to be read.
       if (
         rawCommand === '301' &&
         this.replyOwner !== 'user' &&
         this.eligiblePeer(msg?.params?.[1])
       ) {
+        return;
+      }
+      // A WHOIS the user asked for is the profile's, not the server buffer's:
+      // the whois_result carries all of it. What irc-framework has no field
+      // for is kept as text and rides that event as `other`, so no line a
+      // server adds is lost. An error (401, 402) is still said.
+      if (this.replyOwner === 'user' && this.replies.lineInWhois && !isErrorNumeric(rawCommand)) {
+        if (!WHOIS_MODELLED_NUMERICS.has(rawCommand)) this.noteWhoisOther(msg?.params ?? []);
         return;
       }
       // NAMES replies are denied because a joined channel's nicklist is where
@@ -3078,6 +3088,7 @@ export class IrcConnection {
       this.replayBatches.clear();
       this.multilineBatches.clear();
       this.multilineBatchTags.clear();
+      this.whoisOther.clear();
       // Nobody is present now; the records stay as last known (#1246) and
       // the next registration's SYNCs refresh those still there (#607).
       this.markAllMetadataAbsent();
@@ -5167,17 +5178,22 @@ export class IrcConnection {
     // it produces no signal at all. (This comment said ERR_NOSUCHNICK for a
     // year and misled a reviewer into reading the protocol docs as wrong.)
     //
-    // The server buffer gets the *raw* whois lines instead — every numeric is
-    // rendered straight off the wire by the default-show 'raw' handler (#281,
-    // #342), not the parsed JSON this event carries — so nothing whois-related
-    // is published here beyond the modal payload.
+    // The server buffer gets none of it: the 'raw' handler keeps the user's
+    // WHOIS lines out, and the ones irc-framework has no field for ride this
+    // event as `other` (see whoisOther).
     on('whois', (event: Record<string, unknown>) => {
       if (!event || !event.nick) return;
       // Whoever asked, what it says of a DM peer's account is news (#646).
       if (!event.error) this.noteHeardAccount(event.nick as string, event.account, false);
       // A bouncer client's /whois is its own, not the profile modal's (#931).
       if (!this.replyForUser()) return;
-      this.publishEphemeral({ type: 'whois_result', whois: event });
+      const otherKey = foldTargetFor(this.network.id, String(event.nick));
+      const other = this.whoisOther.get(otherKey);
+      this.whoisOther.delete(otherKey);
+      this.publishEphemeral({
+        type: 'whois_result',
+        whois: other ? { ...event, other } : event,
+      });
     });
 
     // Channel list (`/LIST`). irc-framework batches RPL_LIST every 50 rows and
@@ -8927,6 +8943,20 @@ export class IrcConnection {
       mode: true,
       topic,
     });
+  }
+
+  // A line of the user's WHOIS that irc-framework has no field for, as its
+  // text without the two nicks it opens with. Bounded: a WHOIS that never ends
+  // leaves its lines here until the socket closes.
+  private noteWhoisOther(params: string[]): void {
+    const nick = params[1];
+    const text = params.slice(2).join(' ').trim();
+    if (!nick || !text) return;
+    if (this.whoisOther.size >= 50) this.whoisOther.clear();
+    const key = foldTargetFor(this.network.id, nick);
+    const lines = this.whoisOther.get(key) ?? [];
+    if (lines.length < 50) lines.push(text);
+    this.whoisOther.set(key, lines);
   }
 
   // A server line naming the in-flight step's channel: retire the reply it is,
@@ -15131,6 +15161,31 @@ export function nickRefusalText(command: string, nick: string, reason: string): 
   if (command === '433') return `Nick ${nick} is already in use.`;
   return reason ? `Nick ${nick} was refused: ${reason}` : `Nick ${nick} was refused.`;
 }
+
+// The WHOIS numerics irc-framework reads into its 'whois' event
+// (commands/handlers/user.js). Any other line of a WHOIS reply is one an ircd
+// added, and is passed on as text.
+const WHOIS_MODELLED_NUMERICS = new Set([
+  '276',
+  '301',
+  '307',
+  '310',
+  '311',
+  '312',
+  '313',
+  '317',
+  '318',
+  '319',
+  '320',
+  '330',
+  '335',
+  '338',
+  '344',
+  '378',
+  '379',
+  '569',
+  '671',
+]);
 
 // True for numerics another handler already surfaces (or that would flood), so
 // the 'raw' handler skips them. See SERVER_BUFFER_DENIED_NUMERICS.

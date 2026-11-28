@@ -174,3 +174,48 @@ describe('UserProfileModal — local time', () => {
     expect(row(open('bob'), 'Local time')).toMatch(/\(Europe\/Berlin\)$/);
   });
 });
+
+// What the server says of them that has no row of its own. These were read off
+// the raw whois lines in the server buffer, which no longer carries them.
+describe('UserProfileModal — the rest of the whois', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const also = (w: ReturnType<typeof open>) => w.findAll('dd.also span').map((s) => s.text());
+
+  it('lists modes, fingerprints, special lines, country, ASN and unmodelled lines', () => {
+    useWhoisStore().applyResult(NET, {
+      nick: 'bob',
+      ident: 'u',
+      hostname: 'h.test',
+      modes: 'is using modes +iwx',
+      certfp: 'has client certificate fingerprint ab12',
+      certfps: [
+        'has client certificate fingerprint ab12',
+        'has client certificate fingerprint cd34',
+      ],
+      special: ['is a Network Helper'],
+      country: 'is connecting from Germany',
+      asn: 'is connecting from AS64496',
+      other: ['is logged in from 2 sessions'],
+    });
+    expect(also(open('bob'))).toEqual([
+      'is using modes +iwx',
+      'has client certificate fingerprint ab12',
+      'has client certificate fingerprint cd34',
+      'is a Network Helper',
+      'is connecting from Germany',
+      'is connecting from AS64496',
+      'is logged in from 2 sessions',
+    ]);
+  });
+
+  it('has no row when there is nothing to list', () => {
+    useWhoisStore().applyResult(NET, { nick: 'bob', ident: 'u', hostname: 'h.test' });
+    expect(open('bob').find('dd.also').exists()).toBe(false);
+  });
+
+  it('counts as details on its own', () => {
+    useWhoisStore().applyResult(NET, { nick: 'bob', other: ['is a ghost'] });
+    expect(also(open('bob'))).toEqual(['is a ghost']);
+  });
+});
