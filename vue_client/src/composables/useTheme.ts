@@ -108,6 +108,15 @@ export function useTheme(): void {
       '--modern-indent',
       `${settings.effective('look.message.modern.indent')}ch`,
     );
+    // The traditional layout's nick column (#1405), as the lengths its grid
+    // and cells take: a floor for the track (a cell's 1ch of padding
+    // included), a cap for each cell's text. A minimum over the maximum is
+    // the maximum, as a fixed column.
+    const nickMax = Number(settings.effective('look.message.traditional.nick_column_max')) || 0;
+    const nickMin = Number(settings.effective('look.message.traditional.nick_column_min')) || 0;
+    const nickFloor = nickMax > 0 ? Math.min(nickMin, nickMax) : nickMin;
+    root.style.setProperty('--nick-col-min', nickFloor > 0 ? `${nickFloor + 1}ch` : '0px');
+    root.style.setProperty('--nick-col-max', nickMax > 0 ? `${nickMax}ch` : 'none');
     root.style.colorScheme = computedColorScheme(String(settings.effective('look.color.bg')));
     bumpThemeEpoch();
   });

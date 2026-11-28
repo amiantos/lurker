@@ -128,11 +128,11 @@ function time(at: Date, key: string): string {
 
 <style scoped>
 /* Two columns: the two modern cards side by side, and Traditional across
-   both. The grid is the wide layout (a time to the second, the nick column's
-   16ch floor, then the text on one line), so half a row cannot show it as it
-   is. A width too narrow for two modern cards, a phone's, stacks them. The
-   track's floor is just under half the row however wide that is, so there
-   are never three columns and the cards always fill the picker's width. */
+   both. The grid is the wide layout (a time to the second, the nick column,
+   then the text on one line), so half a row cannot show it as it is. A
+   width too narrow for two modern cards, a phone's, stacks them. The track's
+   floor is just under half the row however wide that is, so there are never
+   three columns and the cards always fill the picker's width. */
 .layout-picker {
   display: grid;
   grid-template-columns: repeat(
@@ -201,14 +201,15 @@ function time(at: Date, key: string): string {
   text-overflow: ellipsis;
 }
 
-/* Traditional: time | nick | text. The nick column keeps the list's 16ch
-   floor, nicks set against its right edge. The gaps are each cell's padding,
-   with a separator down the text column's left edge, continuous from row to
-   row. */
+/* Traditional: time | nick | text. The nick column fits the widest nick, as
+   the list's does, and keeps the reader's minimum for it (--nick-col-min);
+   a maximum is not drawn here, the sample nicks being short. Nicks are set
+   against the column's right edge. The gaps are each cell's padding, with a
+   separator down the text column's left edge, continuous from row to row. */
 .sample.traditional {
   display: grid;
   min-height: 0;
-  grid-template-columns: max-content minmax(16ch, max-content) minmax(0, 1fr);
+  grid-template-columns: max-content minmax(var(--nick-col-min, 0px), max-content) minmax(0, 1fr);
   align-content: center;
   column-gap: 0;
   line-height: 1.55;

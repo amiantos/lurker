@@ -7,7 +7,7 @@
   <div
     ref="scroller"
     class="message-list"
-    :class="{ compact: compactMode, avatars: showAvatars }"
+    :class="{ compact: compactMode, avatars: showAvatars, 'nick-max': nickColumnMax > 0 }"
     @scroll="onScroll"
     @wheel="onWheel"
   >
@@ -185,16 +185,24 @@
             class="prefix"
             :class="prefixClass(row.m)"
             :style="row.continuationAuthor || row.m?.type === 'message' ? null : prefixStyle(row.m)"
-            ><template v-if="row.m?.type === 'message' && !row.continuationAuthor"
-              ><NickRef
-                :nick="row.m?.nick ?? ''"
-                :modes="authorModes(row.m)"
-                :show-prefix="showModePrefix"
-                :prefix="memberPrefix"
-                :plain="!!row.m?.relaySource"
-                interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /></template
-            ><template v-else>{{ row.continuationAuthor ? '' : prefixText(row.m) }}</template></span
+            ><!-- The cell's text in a box of its own, so a maximum nick column
+                 (#1405) can cut it short. The `+` after it is the mark that
+                 says so: a character of its own, shown on the cells that
+                 were cut, in the last of the characters they are allowed. --><span
+              class="prefix-text"
+              ><template v-if="row.m?.type === 'message' && !row.continuationAuthor"
+                ><NickRef
+                  :nick="row.m?.nick ?? ''"
+                  :modes="authorModes(row.m)"
+                  :show-prefix="showModePrefix"
+                  :prefix="memberPrefix"
+                  :plain="!!row.m?.relaySource"
+                  interactive
+                  @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /></template
+              ><template v-else>{{
+                row.continuationAuthor ? '' : prefixText(row.m)
+              }}</template></span
+            ><span v-if="nickColumnMax > 0" class="prefix-more" aria-hidden="true">+</span></span
           >
         </template>
         <!-- One body for both layouts: the per-type chain below is the only
@@ -690,6 +698,111 @@ const tsFormat = computed(() =>
 
 const scroller = ref<HTMLElement | null>(null);
 const stickToBottom = ref(true);
+
+// The traditional layout's nick column is as wide as the widest nick drawn
+// (#1405), and while a buffer is open it only ever grows. A column that also
+// shrank would rewrap every line each time the widest nick's row left the
+// loaded window, and again when that nick next spoke. This is the widest the
+// column has been for this buffer, in px, handed back to the grid as its
+// floor (--nick-col-floor); 0 is no floor yet. Written to the element by
+// hand, not bound: a bound style would draw the whole list a second time for
+// every buffer opened, to add one property.
+let nickColumnFloor = 0;
+function setNickColumnFloor(px: number) {
+  nickColumnFloor = px;
+  const el = scroller.value;
+  if (!el) return;
+  if (px > 0) el.style.setProperty('--nick-col-floor', `${px}px`);
+  else el.style.removeProperty('--nick-col-floor');
+}
+// The font the floor was measured in: pixels from another size mean nothing.
+let nickColumnFont = '';
+// The reader's own limits on the column (WeeChat's prefix_align_min/max), in
+// characters, 0 for none. useTheme hands them to the stylesheet; here they
+// say when to look for nicks the maximum cut short, and when a floor measured
+// under other limits is void.
+const nickColumnMax = computed(
+  () => Number(settings.effective('look.message.traditional.nick_column_max')) || 0,
+);
+const nickColumnMin = computed(
+  () => Number(settings.effective('look.message.traditional.nick_column_min')) || 0,
+);
+
+// Mark the cells whose text the maximum cut short, so each shows its `+`.
+// Only layout knows which those are: a display name, a mode glyph and the
+// font all change how wide a nick draws. Every read before any write, so the
+// pass costs one layout however many rows are loaded.
+function markClippedNicks() {
+  const el = scroller.value;
+  if (!el || compactMode.value || nickColumnMax.value <= 0) return;
+  const texts = Array.from(el.querySelectorAll<HTMLElement>('.line > .prefix > .prefix-text'));
+  // A cut cell's text has already given a character up to its `+`, so what it
+  // is measured against is the room both have together. Measured against its
+  // own box, a name that came to fit exactly would stay cut forever.
+  // These widths are whole pixels and a character is not, so two rounded
+  // parts can come to a pixel less than the rounded whole: a pixel over is
+  // still a fit.
+  const clipped = texts.map((text) => {
+    const more = text.nextElementSibling as HTMLElement | null;
+    const room = text.clientWidth + (more ? more.offsetWidth : 0);
+    return text.scrollWidth > room + 1;
+  });
+  texts.forEach((text, i) => {
+    const cell = text.parentElement;
+    if (!cell || 'clipped' in cell.dataset === clipped[i]) return;
+    if (clipped[i]) cell.dataset.clipped = '';
+    else delete cell.dataset.clipped;
+  });
+}
+
+function afterDraw() {
+  measureNickColumn();
+  markClippedNicks();
+}
+
+function measureNickColumn() {
+  const el = scroller.value;
+  if (!el || compactMode.value) return;
+  const cs = getComputedStyle(el);
+  const font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  if (font !== nickColumnFont) {
+    nickColumnFont = font;
+    // Drop the stale floor; the read below is of the column it leaves.
+    if (nickColumnFloor !== 0) setNickColumnFloor(0);
+  }
+  // The grid's resolved tracks: time, nick, text. A phone's width has two
+  // and no floor to keep.
+  const tracks = (cs.gridTemplateColumns ?? '').split(' ');
+  if (tracks.length !== 3) return;
+  const width = parseFloat(tracks[1]);
+  if (Number.isFinite(width) && width > nickColumnFloor + 0.5) setNickColumnFloor(width);
+}
+
+// A nick's cell can change width with no row drawn: a display name or a
+// member's rank arriving after the lines did. Those are changes inside the
+// list's own DOM, so watch that, and look again once per frame at most.
+let nickColumnObserver: MutationObserver | null = null;
+let nickColumnFrame = 0;
+function scheduleAfterDraw() {
+  if (nickColumnFrame) return;
+  nickColumnFrame = requestAnimationFrame(() => {
+    nickColumnFrame = 0;
+    afterDraw();
+  });
+}
+onMounted(() => {
+  if (typeof MutationObserver === 'undefined' || !scroller.value) return;
+  nickColumnObserver = new MutationObserver(scheduleAfterDraw);
+  nickColumnObserver.observe(scroller.value, {
+    childList: true,
+    characterData: true,
+    subtree: true,
+  });
+});
+onBeforeUnmount(() => {
+  nickColumnObserver?.disconnect();
+  if (nickColumnFrame) cancelAnimationFrame(nickColumnFrame);
+});
 
 // Consolidated runs the reader has opened (#1430): one set per run, of the
 // row keys of its events. A run is open while ANY of its rows is in one. A
@@ -1864,6 +1977,30 @@ const renderRows = computed((): RenderRow[] => {
   return final;
 });
 
+// After every draw: a wider nick may have widened the column.
+watch(renderRows, afterDraw, { flush: 'post' });
+onMounted(afterDraw);
+// A font change draws no row, and a floor in the old font's pixels is wrong
+// from that moment.
+watch(
+  () => [
+    settings.effective('look.font.family'),
+    settings.effective('look.font.size'),
+    settings.effective('look.font.weight'),
+  ],
+  () => void nextTick(afterDraw),
+  { flush: 'post' },
+);
+// New limits: the widest the column has been was under the old ones.
+watch(
+  () => [nickColumnMin.value, nickColumnMax.value],
+  () => {
+    setNickColumnFloor(0);
+    void nextTick(afterDraw);
+  },
+  { flush: 'post' },
+);
+
 // Tell the buffers store whether the unread divider is on screen
 // (lib/unreadDivider): a live line keeps a boundary only when it is, and one
 // past the read pointer can be hidden here (an ignored sender, a thread reply,
@@ -2446,7 +2583,11 @@ async function pinAnchorRow(el: HTMLElement, anchorId: number, useHeightFallback
       ? (el.querySelector(`[data-msg-id="${anchorId}"]`) as HTMLElement | null)
       : null;
   if (anchorNew) {
-    el.scrollTop = anchorNew.offsetTop - (anchorOldTop! - oldScrollTop);
+    // Only when the row moved. Writing scrollTop back unchanged is not
+    // nothing: it stops a smooth scroll or a touch fling where it stands.
+    if (anchorNew.offsetTop !== anchorOldTop) {
+      el.scrollTop = anchorNew.offsetTop - (anchorOldTop! - oldScrollTop);
+    }
   } else if (useHeightFallback) {
     el.scrollTop = el.scrollHeight - oldScrollHeight + oldScrollTop;
   }
@@ -2623,7 +2764,12 @@ watch(
     // the same set of [data-msg-id] elements with stable identity above
     // and below the prepend boundary.
     if (firstChanged && !lastChanged && grew && oldFirstId != null) {
-      await pinAnchorRow(el, oldFirstId, true);
+      // In the traditional layout, the row at the top of the view when there
+      // is one: an older page can bring a nick that widens the nick column
+      // (#1405), and the lines between the old first row and the reader's
+      // rewrap with it.
+      const anchorId = (compactMode.value ? null : topVisibleMessageId(el)) ?? oldFirstId;
+      await pinAnchorRow(el, anchorId, true);
       ensureViewportFilled();
       return;
     }
@@ -2651,8 +2797,28 @@ watch(
     // an unseen row at the front), leave scrollTop alone rather than let the
     // prepend-style fallback over-scroll and jump the view.
     if (appended && firstChanged && !stickToBottom.value && !isDetached && newFirstId != null) {
-      await pinAnchorRow(el, newFirstId, false);
+      // The traditional layout anchors on the row at the top of the view, not
+      // the new front one: a nick that widens the nick column (#1405) rewraps
+      // the lines between the two, and only the nearer row accounts for those.
+      // Unless that row is the one being evicted: then the new front row, as
+      // before.
+      const top = compactMode.value ? null : topVisibleMessageId(el);
+      const anchorId = top != null && top !== oldFirstId ? top : newFirstId;
+      await pinAnchorRow(el, anchorId, false);
       maybeBumpNewBelow();
+      ensureViewportFilled();
+      return;
+    }
+    // An append while scrolled up adds a row below the viewport, and usually
+    // that is all it does. But a nick wider than any drawn so far widens the
+    // nick column (#1405), which rewraps the lines above the reader too, so
+    // hold the row at the top of their view where it is. The modern layout
+    // has no such column, and is left as it was.
+    if (appended && !firstChanged && !replaced && !stickToBottom.value && !compactMode.value) {
+      const anchorId = topVisibleMessageId(el);
+      if (anchorId != null) await pinAnchorRow(el, anchorId, false);
+      else await nextTick();
+      if (!isDetached) maybeBumpNewBelow();
       ensureViewportFilled();
       return;
     }
@@ -2713,6 +2879,8 @@ watch(
 watch(
   () => networks.activeKey,
   async () => {
+    // Another buffer, another set of nicks: its column starts from nothing.
+    setNickColumnFloor(0);
     stickToBottom.value = true;
     unreadSeen = false;
     unreadExpired = false;
@@ -3055,10 +3223,16 @@ watch(
      taken up by the shared first and last tracks, so columns stay aligned). */
   padding: var(--space-2) 0;
   display: grid;
-  /* Nick column has a 16ch floor (matching the most common modern NICKLEN)
-     so the layout is consistent across buffers regardless of who's talking,
-     and stretches if a network advertises a higher limit. */
-  grid-template-columns: max-content minmax(16ch, max-content) minmax(0, 1fr);
+  /* The nick column fits the widest nick drawn (#1405), so the widest sits
+     one character from the time. --nick-col-floor is the widest it has been
+     while this buffer is open (measureNickColumn): it grows and never
+     shrinks, so lines are not rewrapped as nicks come and go.
+     --nick-col-min is the reader's own floor under it
+     (look.message.traditional.nick_column_min). */
+  grid-template-columns:
+    max-content
+    minmax(max(var(--nick-col-floor, 0px), var(--nick-col-min, 0px)), max-content)
+    minmax(0, 1fr);
   grid-auto-rows: min-content;
   align-content: start;
   column-gap: 0;
@@ -3211,6 +3385,35 @@ watch(
 .prefix.italic {
   font-style: italic;
 }
+/* A maximum nick column (look.message.traditional.nick_column_max): a cell's
+   nick longer than that many characters is cut one short of it and a `+`
+   takes the last, so a cut cell is exactly the maximum wide and keeps its
+   padding. The `+` is a character in the line, not a decoration over it.
+   Which cells were cut is layout's to say (markClippedNicks). Scoped to
+   .nick-max so a reader with no maximum gets none of this. */
+.prefix-more {
+  display: none;
+}
+.message-list.nick-max:not(.compact) .line > .prefix {
+  display: flex;
+  align-items: baseline;
+}
+.message-list.nick-max:not(.compact) .line > .prefix > .prefix-text {
+  min-width: 0;
+  max-width: var(--nick-col-max, none);
+  overflow: hidden;
+}
+.message-list.nick-max:not(.compact) .line > .prefix[data-clipped] > .prefix-text {
+  max-width: calc(var(--nick-col-max) - 1ch);
+}
+.message-list.nick-max:not(.compact) .line > .prefix[data-clipped] > .prefix-more {
+  display: block;
+  width: 1ch;
+  color: var(--fg-muted);
+  /* Not part of the nick: copying the cell copies the name alone. */
+  -webkit-user-select: none;
+  user-select: none;
+}
 .prefix.action-marker {
   color: var(--fg-muted);
 }
@@ -3348,13 +3551,12 @@ watch(
 }
 /* .msg-link styling lives in src/assets/main.css (shared with the topic bar). */
 
-/* Mobile + standard layout: phone widths can't spare the time column or the
-   16ch nick floor — either alone would leave 10ch for the body. We drop the
-   time column entirely and let the nick column collapse to the widest
-   currently-visible nick. Scoped to :not(.compact) because compact mode
-   handles narrow viewports natively via its head-line layout, and the bare
-   `.time { display: none }` would otherwise hide the time inside compact's
-   head element. */
+/* Mobile + standard layout: phone widths can't spare the time column or a
+   floor under the nick column. We drop the time column entirely and let the
+   nick column collapse to the widest currently-visible nick. Scoped to
+   :not(.compact) because compact mode handles narrow viewports natively via
+   its head-line layout, and the bare `.time { display: none }` would
+   otherwise hide the time inside compact's head element. */
 @media (max-width: 768px) {
   .message-list:not(.compact) {
     grid-template-columns: minmax(0, max-content) minmax(0, 1fr);

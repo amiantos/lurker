@@ -54,6 +54,32 @@ describe('useTheme — compact density variables', () => {
     expect(read('--modern-indent')).toBe('0ch');
   });
 
+  // #1405: the traditional layout's nick column limits. The floor counts the
+  // cell's 1ch of padding; the cap is the text alone.
+  it('writes the nick column limits, and none by default', async () => {
+    useSettingsStore().values = {} as never;
+    await nextTick();
+    expect(read('--nick-col-min')).toBe('0px');
+    expect(read('--nick-col-max')).toBe('none');
+    useSettingsStore().values = {
+      'look.message.traditional.nick_column_min': 16,
+      'look.message.traditional.nick_column_max': 20,
+    } as never;
+    await nextTick();
+    expect(read('--nick-col-min')).toBe('17ch');
+    expect(read('--nick-col-max')).toBe('20ch');
+  });
+
+  it('holds a minimum over the maximum to the maximum: a fixed column', async () => {
+    useSettingsStore().values = {
+      'look.message.traditional.nick_column_min': 30,
+      'look.message.traditional.nick_column_max': 16,
+    } as never;
+    await nextTick();
+    expect(read('--nick-col-min')).toBe('17ch');
+    expect(read('--nick-col-max')).toBe('16ch');
+  });
+
   it('a reset falls back to the default without a stale override lingering', async () => {
     useSettingsStore().values = {} as never;
     await nextTick();
