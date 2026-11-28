@@ -129,9 +129,10 @@ function time(at: Date, key: string): string {
 <style scoped>
 /* Two columns: the two modern cards side by side, and Traditional across
    both. The grid is the wide layout (a time to the second, the nick column,
-   then the text on one line), so half a row cannot show it as it is. A width too narrow for two modern cards, a phone's, stacks them. The
-   track's floor is just under half the row however wide that is, so there
-   are never three columns and the cards always fill the picker's width. */
+   then the text on one line), so half a row cannot show it as it is. A
+   width too narrow for two modern cards, a phone's, stacks them. The track's
+   floor is just under half the row however wide that is, so there are never
+   three columns and the cards always fill the picker's width. */
 .layout-picker {
   display: grid;
   grid-template-columns: repeat(
@@ -201,9 +202,9 @@ function time(at: Date, key: string): string {
 }
 
 /* Traditional: time | nick | text. The nick column fits the widest nick, as
-   the list's does, nicks set against its right edge. The gaps are each cell's padding,
-   with a separator down the text column's left edge, continuous from row to
-   row. */
+   the list's does, nicks set against its right edge. The gaps are each
+   cell's padding, with a separator down the text column's left edge,
+   continuous from row to row. */
 .sample.traditional {
   display: grid;
   min-height: 0;

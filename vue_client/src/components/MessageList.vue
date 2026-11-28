@@ -1900,6 +1900,13 @@ const renderRows = computed((): RenderRow[] => {
 // After every draw: a wider nick may have widened the column.
 watch(renderRows, measureNickColumn, { flush: 'post' });
 onMounted(measureNickColumn);
+// A font change draws no row, and a floor in the old font's pixels is wrong
+// from that moment.
+watch(
+  () => [settings.effective('look.font.family'), settings.effective('look.font.size')],
+  () => void nextTick(measureNickColumn),
+  { flush: 'post' },
+);
 
 // Tell the buffers store whether the unread divider is on screen
 // (lib/unreadDivider): a live line keeps a boundary only when it is, and one
@@ -2483,7 +2490,11 @@ async function pinAnchorRow(el: HTMLElement, anchorId: number, useHeightFallback
       ? (el.querySelector(`[data-msg-id="${anchorId}"]`) as HTMLElement | null)
       : null;
   if (anchorNew) {
-    el.scrollTop = anchorNew.offsetTop - (anchorOldTop! - oldScrollTop);
+    // Only when the row moved. Writing scrollTop back unchanged is not
+    // nothing: it stops a smooth scroll or a touch fling where it stands.
+    if (anchorNew.offsetTop !== anchorOldTop) {
+      el.scrollTop = anchorNew.offsetTop - (anchorOldTop! - oldScrollTop);
+    }
   } else if (useHeightFallback) {
     el.scrollTop = el.scrollHeight - oldScrollHeight + oldScrollTop;
   }
@@ -2688,7 +2699,11 @@ watch(
     // an unseen row at the front), leave scrollTop alone rather than let the
     // prepend-style fallback over-scroll and jump the view.
     if (appended && firstChanged && !stickToBottom.value && !isDetached && newFirstId != null) {
-      await pinAnchorRow(el, newFirstId, false);
+      // The traditional layout anchors on the row at the top of the view, not
+      // the new front one: a nick that widens the nick column (#1405) rewraps
+      // the lines between the two, and only the nearer row accounts for those.
+      const anchorId = (compactMode.value ? null : topVisibleMessageId(el)) ?? newFirstId;
+      await pinAnchorRow(el, anchorId, false);
       maybeBumpNewBelow();
       ensureViewportFilled();
       return;
@@ -2696,8 +2711,9 @@ watch(
     // An append while scrolled up adds a row below the viewport, and usually
     // that is all it does. But a nick wider than any drawn so far widens the
     // nick column (#1405), which rewraps the lines above the reader too, so
-    // hold the row at the top of their view where it is.
-    if (appended && !firstChanged && !replaced && !stickToBottom.value) {
+    // hold the row at the top of their view where it is. The modern layout
+    // has no such column, and is left as it was.
+    if (appended && !firstChanged && !replaced && !stickToBottom.value && !compactMode.value) {
       const anchorId = topVisibleMessageId(el);
       if (anchorId != null) await pinAnchorRow(el, anchorId, false);
       else await nextTick();
@@ -3404,10 +3420,10 @@ watch(
 
 /* Mobile + standard layout: phone widths can't spare the time column or a
    floor under the nick column. We drop the time column entirely and let the
-   nick column collapse to the widest currently-visible nick. Scoped to :not(.compact) because compact mode
-   handles narrow viewports natively via its head-line layout, and the bare
-   `.time { display: none }` would otherwise hide the time inside compact's
-   head element. */
+   nick column collapse to the widest currently-visible nick. Scoped to
+   :not(.compact) because compact mode handles narrow viewports natively via
+   its head-line layout, and the bare `.time { display: none }` would
+   otherwise hide the time inside compact's head element. */
 @media (max-width: 768px) {
   .message-list:not(.compact) {
     grid-template-columns: minmax(0, max-content) minmax(0, 1fr);

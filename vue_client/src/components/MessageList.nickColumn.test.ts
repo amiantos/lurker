@@ -116,6 +116,57 @@ describe('MessageList — the nick column', () => {
     expect(floor(w)).toBe('50px');
   });
 
+  // A reader scrolled up: the row at the top of their view is `anchor`, and
+  // `top` is where the stubbed layout says it sits, asked at each read.
+  async function scrolledUpAt(w: VueWrapper, anchorId: number, top: () => number) {
+    const scroller = w.find('.message-list');
+    const el = scroller.element as HTMLElement;
+    const anchor = w.find(`[data-msg-id="${anchorId}"]`).element as HTMLElement;
+    Object.defineProperty(anchor, 'offsetTop', { get: top, configurable: true });
+    document.elementFromPoint = () => anchor;
+    el.scrollTop = 40;
+    await scroller.trigger('wheel', { deltaY: -10 });
+    return el;
+  }
+
+  it('holds a scrolled-up reader in place when an append moves their row', async () => {
+    const b = open('#chan', 9, [line('bob'), line('carol')]);
+    const w = (wrapper = mount(MessageList, { attachTo: document.body }));
+    await w.vm.$nextTick();
+    // Once the wider nick's row is drawn, the lines above have rewrapped and
+    // the reader's row is 30px further down.
+    const wide = line('averylongnickname');
+    const drawn = () => w.find(`[data-msg-id="${wide.id}"]`).exists();
+    const el = await scrolledUpAt(w, 2, () => (drawn() ? 130 : 100));
+
+    b.messages = [...b.messages, wide] as never;
+    await w.vm.$nextTick();
+    await w.vm.$nextTick();
+    expect(el.scrollTop).toBe(70);
+  });
+
+  it('leaves the scroll position unwritten when the row did not move', async () => {
+    const b = open('#chan', 9, [line('bob'), line('carol')]);
+    const w = (wrapper = mount(MessageList, { attachTo: document.body }));
+    await w.vm.$nextTick();
+    const el = await scrolledUpAt(w, 2, () => 100);
+    let writes = 0;
+    let scrollTop = 40;
+    Object.defineProperty(el, 'scrollTop', {
+      get: () => scrollTop,
+      set: (v: number) => {
+        writes += 1;
+        scrollTop = v;
+      },
+      configurable: true,
+    });
+
+    b.messages = [...b.messages, line('al')] as never;
+    await w.vm.$nextTick();
+    await w.vm.$nextTick();
+    expect(writes).toBe(0);
+  });
+
   it('measures again when the font changes', async () => {
     const b = open('#chan', 9, [line('bob')]);
     const w = (wrapper = mount(MessageList, { attachTo: document.body }));
