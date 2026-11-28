@@ -201,6 +201,7 @@ describe('applyBufferRenamed — the full frame contract', () => {
     useBuffersStore().ensure(NET, ABSORBED, 99);
     useDraftStore().drafts[`${NET}::${ABSORBED}`] = 'stale draft';
     usePinsStore().byNetwork[NET] = [TARGET, ABSORBED];
+    useChannelNotifyStore().byNetwork[NET]![ABSORBED] = { notifyAlways: false };
     const live = useBuffersStore().buffers[KEY]!;
     live.messages.push({ id: 5, networkId: NET, target: TARGET, type: 'message' });
 
@@ -225,6 +226,9 @@ describe('applyBufferRenamed — the full frame contract', () => {
     // absorbed side was swept before the rename landed).
     expect(useDraftStore().drafts[`${NET}::${ABSORBED}`]).toBe('half-typed');
     expect(usePinsStore().byNetwork[NET]).toEqual([ABSORBED]);
+    // A close keeps the notify flag (#1421); an absorbed buffer's still goes,
+    // or it would win the collision and the live buffer's flag would be lost.
+    expect(useChannelNotifyStore().byNetwork[NET]![ABSORBED]).toEqual({ notifyAlways: true });
   });
 
   it('refold orientation: the absorbed row is identified by id, never by `to`', () => {
