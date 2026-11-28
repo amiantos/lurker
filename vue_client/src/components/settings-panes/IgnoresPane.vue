@@ -134,7 +134,7 @@
 
         <!-- Which (levels) -->
         <div class="field">
-          <span class="field-label">Event types</span>
+          <span class="field-label">Event types to hide</span>
           <div class="chips">
             <button
               type="button"
@@ -161,7 +161,7 @@
 
         <!-- Which (modifiers): what a matching line loses while staying visible -->
         <div class="field">
-          <span class="field-label">Without hiding</span>
+          <span class="field-label">Silencing options</span>
           <div class="chips">
             <button
               v-for="mod in MODIFIER_LEVELS"
@@ -405,7 +405,7 @@ function buildRule(): IgnoreRule | null {
   // suppress this nick's highlights. That is the rule #775 was about.
   if (levels.length === 0) {
     formError.value =
-      'pick at least one event type, or one of the “Without hiding” options — as written this rule would do nothing.';
+      'pick at least one event type to hide, or a silencing option — as written this rule would do nothing.';
     return null;
   }
   // Guard the footgun rules a GUI shouldn't make easy. A rule with no who/where/

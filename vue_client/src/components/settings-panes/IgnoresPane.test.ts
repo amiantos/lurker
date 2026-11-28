@@ -103,7 +103,7 @@ describe('IgnoresPane — the ALL chip and the NOHIGHLIGHT-only rule (#775)', ()
     await chip(wrapper, 'ALL').trigger('click');
     await submit(wrapper);
     expect(sentRule()).toBeNull();
-    expect(wrapper.find('.form-error').text()).toContain('Without hiding');
+    expect(wrapper.find('.form-error').text()).toContain('silencing option');
   });
 
   it('keeps a granular selection selectable and clearable', async () => {
